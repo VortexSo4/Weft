@@ -648,4 +648,11 @@ impl Gen {
     pub fn surface_carved(&self, x: i32, z: i32) -> bool {
         unsafe { (host().dim_carved)(self.args.dim, self.args.seed, x, z) != 0 }
     }
+
+    /// The block the terrain leaves at the top of column (`x`, `z`), in world coordinates: 0
+    /// where caves took it or the dimension has no terrain. `get` only sees this cube, so this is
+    /// how to know the ground under its lowest layer.
+    pub fn surface_block(&self, x: i32, z: i32) -> u32 {
+        unsafe { (host().dim_surface)(self.args.dim, self.args.seed, x, z) }
+    }
 }

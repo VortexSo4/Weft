@@ -202,6 +202,7 @@ pub static HOST: Host = Host {
     reg_screen_part,
     dim_column,
     dim_carved,
+    dim_surface,
 };
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
@@ -1296,6 +1297,10 @@ unsafe extern "C" fn dim_column(dim: u32, seed: u64, x: i32, z: i32, out: *mut a
 
 unsafe extern "C" fn dim_carved(dim: u32, seed: u64, x: i32, z: i32) -> u32 {
     content().dims.get(dim as usize).is_some_and(|d| d.carved(seed, x, z)) as u32
+}
+
+unsafe extern "C" fn dim_surface(dim: u32, seed: u64, x: i32, z: i32) -> u32 {
+    content().dims.get(dim as usize).map_or(0, |d| d.surface_block(seed, x, z))
 }
 
 unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {

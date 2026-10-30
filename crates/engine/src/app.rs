@@ -204,6 +204,8 @@ pub(crate) struct Running {
     pub(crate) stats: Stats,
     /// F3 held and used for a combination since it went down (then releasing it does not toggle).
     f3_combo: Option<bool>,
+    /// F1: the world alone, until a screen opens or F1 again.
+    hud_off: bool,
     reload_requested: bool,
     /// The settings in effect, and the config changes seen (`apply_settings`).
     applied: Applied,
@@ -416,6 +418,7 @@ impl App {
                 ..Default::default()
             },
             f3_combo: None,
+            hud_off: false,
             reload_requested: false,
             packs_pending: false,
             applied: Applied { packs: packs_now, ..Default::default() },
@@ -720,7 +723,20 @@ impl Running {
     /// Mouse and keyboard for the top screen.
     fn screen_input(&mut self, scale: f32, requests: &mut Vec<Request>) {
         let cursor = self.input.cursor / scale;
-        let Some((_, ui)) = self.screens.last_mut() else { return };
+        let Some((screen, ui)) = self.screens.last_mut() else { return };
+        let mut ctx = Ctx {
+            settings: &mut self.settings,
+            client: self.game.as_mut().map(|g| &mut g.client),
+            input: &self.input,
+            requests: &mut *requests,
+            stats: &self.stats,
+            debug: self.debug,
+            top: None,
+        };
+        if screen.pointer(cursor, ui, &mut ctx) {
+            self.quads_dirty = true;
+            return;
+        }
         if self.input.scroll != 0.0 && ui.scroll_at(cursor, self.input.scroll) {
             self.quads_dirty = true;
         }
@@ -1446,6 +1462,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.hud.invalidate();
         }
     }
+    if r.input.pressed("core:hide_hud") && r.screens.is_empty() {
+        r.hud_off = !r.hud_off;
+        r.quads_dirty = true;
+    }
+    if let Some(g) = &mut r.game {
+        g.client.hide_gui = r.hud_off;
+    }
     if r.packs_pending && !r.screens.iter().any(|(s, _)| matches!(s.name(), "core:resource_packs" | "core:shader_packs")) {
         r.packs_pending = false;
         r.apply_settings();
@@ -1649,7 +1672,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let preview_tex = r.preview_tex;
         let mut layers: Vec<&Ui> = Vec::new();
         let mut animated = Vec::new();
-        if r.game.is_some() && !hud_hidden() {
+        if r.game.is_some() && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
             layers.push(&r.hud.ui);
         }
         // Only the top screen shows, like vanilla: the ones under it are not drawn through its

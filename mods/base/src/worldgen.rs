@@ -191,11 +191,12 @@ fn decorate(g: &mut Gen) {
                 continue;
             }
             let y = y as usize;
-            if y == 0 || g.get(x, y, z) != 0 {
+            if g.get(x, y, z) != 0 {
                 continue;
             }
-            let below = g.get(x, y - 1, z);
-            let h = hash(seed ^ 0xF10, (ox + x as i32) as i64, 0, (oz + z as i32) as i64);
+            let (wx, wz) = (ox + x as i32, oz + z as i32);
+            let below = if y == 0 { g.surface_block(wx, wz) } else { g.get(x, y - 1, z) };
+            let h = hash(seed ^ 0xF10, wx as i64, 0, wz as i64);
             let roll = unit(h);
             // Plants go where they could be planted (soil tags); the biome decides how many.
             let b = col.biome;
@@ -217,7 +218,7 @@ fn decorate(g: &mut Gen) {
                 for k in 0..n as usize {
                     g.set(x, y + k, z, CACTUS.id());
                 }
-            } else if SUGAR_CANE_SOIL.on_block(below) && col.height == SEA && roll < 0.08 && y + 2 < 16 {
+            } else if SUGAR_CANE_SOIL.on_block(below) && col.height == SEA && roll < 0.08 && y + 2 < 16 && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| g.column(wx + dx, wz + dz).height < SEA) {
                 let n = 1 + (h >> 40) % 3;
                 for k in 0..n as usize {
                     g.set(x, y + k, z, SUGAR_CANE.id());

@@ -330,6 +330,11 @@ impl DimensionDef {
         self.terrain.as_ref().is_some_and(|t| t.surface_carved(seed, x, z))
     }
 
+    /// The block the terrain leaves at the top of column (`x`, `z`), 0 if none.
+    pub fn surface_block(&self, seed: u64, x: i32, z: i32) -> u32 {
+        self.terrain.as_ref().map_or(0, |t| t.surface_block(seed, x, z))
+    }
+
     /// The terrain's sea level, if it has a sea.
     pub fn sea_level(&self) -> Option<i32> {
         self.terrain.as_ref().and_then(|t| t.sea_level())

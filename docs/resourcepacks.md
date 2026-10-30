@@ -44,7 +44,7 @@ Two things catch people out. First, files are replaced whole. Translations are t
 A pack can't add blocks, items or mobs, since those are code and so need a mod. What it can add is looks for things that already exist: a `.ctm` for a texture that had none (in the folder of the mod that owns it, like `my_pack/base/textures/block/glass.ctm`, which a mod can't do for someone else's texture), or `_e`, `.anim` and `_overlay` files for existing textures.
 
 ## Order of packs
-Several packs can be on at once, and they stack. The list reads **Selected (top wins)**: where two packs have the same file, the one higher up is used. A pack only needs the files it changes, so a small pack of textures can sit on top of a big one without copying anything.
+Several packs can be on at once, and they stack. Drag a pack by its handle: over to the other list to turn it on or off, or up and down to change its place. The list reads **Selected (top wins)**: where two packs have the same file, the one higher up is used. A pack only needs the files it changes, so a small pack of textures can sit on top of a big one without copying anything.
 
 Packs are folders only, zip files aren't read.
 

@@ -606,6 +606,7 @@ pub mod keys {
     pub static DEBUG: Key = Key::named("core:debug");
     pub static SCREENSHOT: Key = Key::named("core:screenshot");
     pub static PERSPECTIVE: Key = Key::named("core:perspective");
+    pub static HIDE_HUD: Key = Key::named("core:hide_hud");
     pub static RELOAD: Key = Key::named("core:reload");
     pub static RECIPES: Key = Key::named("core:recipes");
     pub static USES: Key = Key::named("core:uses");

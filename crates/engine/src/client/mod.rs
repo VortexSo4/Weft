@@ -275,6 +275,8 @@ pub struct Client {
     last_jump: Option<Instant>,
     /// 0 first person, 1 third person from behind, 2 from the front.
     pub view: u8,
+    /// F1: no hand and no block outline.
+    pub hide_gui: bool,
     /// Arm swing progress 0..1 while swinging.
     hand_swing: Option<f32>,
     /// Own walk distance and swing amplitude, for the third person model and view bobbing.
@@ -487,6 +489,7 @@ impl Client {
             mode: GameMode::Survival,
             last_jump: None,
             view: 0,
+            hide_gui: false,
             hand_swing: None,
             self_walk: 0.0,
             self_swing: 0.0,
@@ -1664,7 +1667,7 @@ impl Client {
         late.clear();
         self.render.draw_translucent(&mut late);
         let me = (self.view != 0 && !self.dead && self.mode != GameMode::Spectator).then(|| self.self_entity());
-        let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator).then(|| entity_render::Hand {
+        let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator && !self.hide_gui).then(|| entity_render::Hand {
             stack: self.held(),
             swing: self.hand_swing,
             anim: self.self_anim.clone(),
@@ -1674,7 +1677,7 @@ impl Client {
         let light = |p: IVec3| world.light(p);
         let mut hand_late = std::mem::take(&mut self.hand_late);
         hand_late.clear();
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, &scene, scene_buf, self.target.map(|h| (h, self.frame_origin(h.frame))), self.breaking.map(|(f, p, v)| (p, v, self.frame_origin(f))), &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, &scene, scene_buf, self.target.filter(|_| !self.hide_gui).map(|h| (h, self.frame_origin(h.frame))), self.breaking.map(|(f, p, v)| (p, v, self.frame_origin(f))), &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
         self.particles.draw(gpu, list, &mut late, frame, &cam, textures, scene_buf);
         list.append(&mut late);
         list.append(&mut hand_late);

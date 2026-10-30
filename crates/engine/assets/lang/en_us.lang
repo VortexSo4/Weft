@@ -206,6 +206,7 @@ packs.open_folder = Open Folder
 packs.shaders_off = Off (built-in shaders)
 packs.shaders_note = A pack replaces any of {0}.
 key.core.perspective = Toggle perspective
+key.core.hide_hud = Hide HUD
 settings.sound = Sound
 settings.mods = Mod Settings
 settings.mods.none = No mod has settings.

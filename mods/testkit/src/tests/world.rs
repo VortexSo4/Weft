@@ -318,6 +318,47 @@ pub async fn foreign_terrain(t: T) -> R {
     Ok(())
 }
 
+/// Plants grow on ground that is the top layer of its cube like on any other, though that ground
+/// lies in the cube below theirs. Sugar cane only grows at sea level, which is such a layer.
+pub async fn plants_on_cube_tops(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode spectator").await?;
+    let tops = |x: i32, z: i32| (-20..=20).flat_map(|dz| (-20..=20).map(move |dx| (dx, dz))).filter(|&(dx, dz)| (dx + dz) % 3 == 0 && (OVERWORLD.column(5, x + dx, z + dz).height + 1) & 15 == 0).count();
+    let plains = (-40..40)
+        .flat_map(|i| (-40..40).map(move |j| (i * 48, j * 48)))
+        .filter(|&(x, z)| [(0, 0), (20, 0), (-20, 0), (0, 20), (0, -20)].iter().all(|&(dx, dz)| name_of(ek::BIOME, OVERWORLD.column(5, x + dx, z + dz).biome) == "base:plains"))
+        .take(40)
+        .max_by_key(|&(x, z)| tops(x, z));
+    let (x, z) = plains.ok_or("no plains")?;
+    t.cmd(&format!("/tp {x} {} {z}", OVERWORLD.column(5, x, z).height + 6)).await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let found = t.op("cube_top_plants 20").await?;
+    t.note(format!("{x} {z}: {found}"));
+    let n: Vec<f32> = found.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    let [top, top_plants, other, other_plants] = n[..] else { return Err(format!("cube_top_plants: {found}")) };
+    t.check(top >= 50.0, format!("too few columns to tell ({top})"));
+    let (on_top, elsewhere) = (top_plants / top.max(1.0), other_plants / other.max(1.0));
+    t.probe("plants on the top layer of a cube, against the others", on_top / elsewhere.max(0.001), on_top > elsewhere * 0.4);
+
+    let shore = |x: i32, z: i32| OVERWORLD.column(5, x, z).height == 63 && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| OVERWORLD.column(5, x + dx, z + dz).height < 63);
+    let near = |x: i32, z: i32| (-16..=16).flat_map(|dz| (-16..=16).map(move |dx| (dx, dz))).filter(|&(dx, dz)| shore(x + dx, z + dz)).count();
+    let beach = (-60..60)
+        .flat_map(|i| (-60..60).map(move |j| (i * 24, j * 24)))
+        .filter(|&(x, z)| shore(x, z) && name_of(ek::BIOME, OVERWORLD.column(5, x, z).biome) == "base:beach")
+        .take(30)
+        .max_by_key(|&(x, z)| near(x, z));
+    let (x, z) = beach.ok_or("no beach")?;
+    t.cmd(&format!("/tp {x} 70 {z}")).await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let cane = t.op("census 28 base:sugar_cane").await?;
+    t.note(format!("{x} {z}, {} shore columns: {cane}", near(x, z)));
+    let canes: u32 = cane.rsplit_once('=').and_then(|v| v.1.parse().ok()).unwrap_or(0);
+    t.check(canes > 0, "sugar cane on the shore");
+    Ok(())
+}
+
 /// `/tick`: a frozen world keeps its time, steps exactly, and a sprint runs a day at once.
 pub async fn tick_control(t: T) -> R {
     t.flat().await?;

@@ -18,7 +18,7 @@ use weft_render::{Shader, ShaderError};
 
 use crate::app::{Ctx, Request};
 use crate::screens::{BuildCx, Screen, button, frame, label};
-use crate::ui::text::{self, Arg};
+use crate::ui::text::Arg;
 use crate::ui::{Justify, Kind, Style, Ui};
 
 pub struct PackInfo {
@@ -130,27 +130,42 @@ pub(crate) fn open_folder(dir: &Path) {
     }
 }
 
-fn pack_row(ui: &mut Ui, cx: &BuildCx, info: &PackInfo, buttons: impl FnOnce(&mut Ui)) {
-    ui.container(Style::row().gap(4.0).stretch(), |ui| {
-        ui.container(Style::default().gap(1.0).grow(), |ui| {
-            ui.text(cx.rich(&info.name), "default");
-            if !info.description.is_empty() {
-                ui.text(cx.rich(&info.description), "dim");
+fn pack_text(ui: &mut Ui, cx: &BuildCx, info: &PackInfo, name_class: &str) {
+    ui.text(cx.rich(&info.name), name_class);
+    if !info.description.is_empty() {
+        ui.text(cx.rich(&info.description), "dim");
+    }
+}
+
+/// A pack's row with the handle it is dragged by; `dragged` leaves it dim under the cursor's copy.
+fn pack_row(ui: &mut Ui, cx: &BuildCx, info: &PackInfo, dragged: bool) {
+    let row = ui.panel("button", Style::row().pad(4.0).gap(4.0).stretch(), |ui| {
+        ui.container(Style::default().gap(1.0).w(198.0), |ui| pack_text(ui, cx, info, if dragged { "dim" } else { "default" }));
+        ui.container(Style::default().grow(), |_| {});
+        let icon = cx.look.texture("icon_drag", "");
+        let handle = ui.button("button", Style::default().w(20.0).h(20.0), Rc::new(|_: &mut Ctx| {}), |ui| {
+            if let Some(texture) = icon {
+                ui.add(Kind::Image { texture, color: 0xFFFFFFFF }, Style::default().w(9.0).h(9.0));
             }
         });
-        buttons(ui);
+        ui.set_id(handle, &format!("pack_handle:{}", info.id));
     });
+    ui.set_id(row, &format!("pack:{}", info.id));
 }
 
-fn small(ui: &mut Ui, glyph: &str, action: impl Fn(&mut Ctx) + 'static) {
-    ui.button("button", Style::default().w(20.0).h(20.0), Rc::new(action), |ui| {
-        ui.text(text::plain(glyph), "button");
-    });
+/// Where the cursor's copy of a dragged pack goes: its handle under the cursor.
+fn ghost_at(cursor: glam::Vec2) -> [f32; 4] {
+    [cursor.x + 16.0, cursor.y, 1.0, 0.5]
 }
 
-/// Available and selected resource packs side by side; the top selected pack wins. Put into
-/// effect when the screen closes (`app::Running::apply_settings`).
-pub struct ResourcePacks;
+/// Available and selected resource packs side by side; the top selected pack wins. Packs move by
+/// their handles, and the lists show where one would land while it is dragged. Put into effect
+/// when the screen closes (`app::Running::apply_settings`).
+#[derive(Default)]
+pub struct ResourcePacks {
+    dragging: Option<String>,
+    cursor: glam::Vec2,
+}
 
 impl Screen for ResourcePacks {
     fn name(&self) -> &str {
@@ -161,64 +176,73 @@ impl Screen for ResourcePacks {
         true
     }
 
+    fn pointer(&mut self, cursor: glam::Vec2, ui: &mut Ui, ctx: &mut Ctx) -> bool {
+        let Some(id) = self.dragging.clone() else {
+            let handle = ui.hit(cursor).and_then(|h| ui.nodes[h].id.as_deref()).and_then(|i| i.strip_prefix("pack_handle:"));
+            let Some(id) = handle.filter(|_| ctx.input.pressed_button(0)) else { return false };
+            self.dragging = Some(id.to_string());
+            self.cursor = cursor;
+            ctx.requests.push(Request::Rebuild);
+            return true;
+        };
+        ui.hovered = None;
+        if !ctx.input.held_button(0) {
+            self.dragging = None;
+            ctx.requests.push(Request::Rebuild);
+            return true;
+        }
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            if let Some(ghost) = ui.find("pack_ghost") {
+                ui.nodes[ghost].style.at = Some(ghost_at(cursor));
+                ui.dirty = true;
+            }
+        }
+        let (Some(available), Some(chosen)) = (ui.find("packs_available"), ui.find("packs_selected")) else { return true };
+        let (left, right) = (ui.nodes[available].rect, ui.nodes[chosen].rect);
+        let before = ctx.settings.resource_packs();
+        let mut packs: Vec<String> = before.iter().filter(|p| **p != id).cloned().collect();
+        if cursor.x >= (left.x + left.w + right.x) / 2.0 {
+            let above = packs.iter().filter_map(|p| ui.find(&format!("pack:{p}"))).filter(|&n| ui.nodes[n].rect.y + ui.nodes[n].rect.h / 2.0 < cursor.y).count();
+            packs.insert(above, id);
+        }
+        if packs != before {
+            ctx.settings.set_resource_packs(&packs);
+            ctx.requests.push(Request::Rebuild);
+        }
+        true
+    }
+
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let dir = resource_dir(&cx.settings.run_dir);
         let all = list(&dir);
         let selected = cx.settings.resource_packs();
+        let missing = |id: &str| PackInfo { id: id.to_string(), name: id.to_string(), description: cx.lang.get("packs.missing").to_string() };
+        let dragging = self.dragging.as_deref();
         frame(ui, cx, "settings.resource_packs", |ui| {
             ui.container(Style::row().gap(8.0).grow().h(0.0).stretch(), |ui| {
                 ui.container(Style::default().gap(4.0).w(260.0).stretch(), |ui| {
                     label(ui, cx, "packs.available", &[], "default");
-                    ui.panel("panel", Style::default().pad(6.0).gap(4.0).stretch().grow().h(0.0).scroll(), |ui| {
+                    let panel = ui.panel("panel", Style::default().pad(6.0).gap(4.0).stretch().grow().h(0.0).scroll(), |ui| {
                         let available: Vec<&PackInfo> = all.iter().filter(|p| !selected.contains(&p.id)).collect();
                         if available.is_empty() {
                             label(ui, cx, if all.is_empty() { "packs.none" } else { "packs.all_selected" }, &[], "dim");
                         }
                         for p in available {
-                            let id = p.id.clone();
-                            pack_row(ui, cx, p, |ui| {
-                                small(ui, "+", move |c| {
-                                    let mut p = c.settings.resource_packs();
-                                    p.insert(0, id.clone());
-                                    c.settings.set_resource_packs(&p);
-                                    c.requests.push(Request::Rebuild);
-                                });
-                            });
+                            pack_row(ui, cx, p, dragging == Some(p.id.as_str()));
                         }
                     });
+                    ui.set_id(panel, "packs_available");
                 });
                 ui.container(Style::default().gap(4.0).w(260.0).stretch(), |ui| {
                     label(ui, cx, "packs.selected", &[], "default");
-                    ui.panel("panel", Style::default().pad(6.0).gap(4.0).stretch().grow().h(0.0).scroll(), |ui| {
-                        for (i, id) in selected.iter().enumerate() {
-                            let info = all.iter().find(|p| &p.id == id);
-                            let missing = PackInfo { id: id.clone(), name: id.clone(), description: cx.lang.get("packs.missing").to_string() };
-                            pack_row(ui, cx, info.unwrap_or(&missing), |ui| {
-                                if i > 0 {
-                                    small(ui, "\u{25b2}", move |c| {
-                                        let mut p = c.settings.resource_packs();
-                                        p.swap(i, i - 1);
-                                        c.settings.set_resource_packs(&p);
-                                        c.requests.push(Request::Rebuild);
-                                    });
-                                }
-                                if i + 1 < selected.len() {
-                                    small(ui, "\u{25bc}", move |c| {
-                                        let mut p = c.settings.resource_packs();
-                                        p.swap(i, i + 1);
-                                        c.settings.set_resource_packs(&p);
-                                        c.requests.push(Request::Rebuild);
-                                    });
-                                }
-                                small(ui, "-", move |c| {
-                                    let mut p = c.settings.resource_packs();
-                                    p.remove(i);
-                                    c.settings.set_resource_packs(&p);
-                                    c.requests.push(Request::Rebuild);
-                                });
-                            });
+                    let panel = ui.panel("panel", Style::default().pad(6.0).gap(4.0).stretch().grow().h(0.0).scroll(), |ui| {
+                        for id in &selected {
+                            let gone = missing(id);
+                            pack_row(ui, cx, all.iter().find(|p| &p.id == id).unwrap_or(&gone), dragging == Some(id.as_str()));
                         }
                     });
+                    ui.set_id(panel, "packs_selected");
                 });
             });
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
@@ -226,6 +250,14 @@ impl Screen for ResourcePacks {
                 button(ui, cx, "menu.done", &[], 140.0, |c| c.requests.push(Request::Close));
             });
         });
+        if let Some(id) = dragging {
+            let gone = missing(id);
+            let info = all.iter().find(|p| p.id == id).unwrap_or(&gone);
+            let mut style = Style::default().w(234.0).pad(4.0).gap(1.0);
+            style.at = Some(ghost_at(self.cursor));
+            let ghost = ui.panel("button", style, |ui| pack_text(ui, cx, info, "default"));
+            ui.set_id(ghost, "pack_ghost");
+        }
     }
 }
 

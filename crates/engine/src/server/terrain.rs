@@ -553,6 +553,29 @@ impl Terrain {
         carves(t > 0, c, cavern_roof(seed, x, z), smooth - h * 16)
     }
 
+    /// What rule `rule` puts at the top of a column `h` high, before caves.
+    fn surface_of(&self, rule: u32, h: i32) -> u32 {
+        let Some(r) = self.rules.get(rule as usize) else { return self.stone };
+        if r.bare_above.is_some_and(|y| h > y) {
+            return self.stone;
+        }
+        match r.deep_top {
+            Some((b, below)) if h < below => b,
+            _ => r.top.unwrap_or(self.stone),
+        }
+    }
+
+    /// The block generation leaves at the top of column (`x`, `z`), 0 where caves took it: the
+    /// ground of a decoration on the lowest layer of a cube is in the cube below.
+    pub fn surface_block(&self, seed: u64, x: i32, z: i32) -> u32 {
+        if self.surface_carved(seed, x, z) {
+            return 0;
+        }
+        let cols = self.columns(seed, x.div_euclid(16), z.div_euclid(16));
+        let i = (z.rem_euclid(16) * 16 + x.rem_euclid(16)) as usize;
+        self.surface_of(cols.rules[i], cols.cols[i].height)
+    }
+
     /// Smoothed surface height (Q4) at local column (x, z) from the cube's corner grid.
     fn smooth(corners: &[i32; 25], x: usize, z: usize) -> i32 {
         let (cx, cz) = (x / 4, z / 4);
@@ -591,12 +614,7 @@ impl Terrain {
                 let h = cols.cols[i].height;
                 let rule = self.rules.get(cols.rules[i] as usize);
                 let bare = rule.and_then(|r| r.bare_above).is_some_and(|y| h > y);
-                let mut top = rule.and_then(|r| r.top).unwrap_or(stone);
-                if let Some((b, below)) = rule.and_then(|r| r.deep_top) {
-                    if h < below {
-                        top = b;
-                    }
-                }
+                let top = self.surface_of(cols.rules[i], h);
                 let filler = rule.and_then(|r| r.filler).unwrap_or(stone);
                 let depth = rule.map_or(0, |r| r.depth);
                 let under = rule.and_then(|r| r.under);
@@ -869,6 +887,22 @@ mod tests {
             }
         }
         assert_eq!(checked, 16384);
+    }
+
+    /// The point check decorations use agrees with what generation put there.
+    #[test]
+    fn surface_block_matches_generation() {
+        let t = terrain(vec![preset(p::HILLS, [16.0, 110.0, 0.0, 0.0])], Vec::new(), Some(1), 64.0);
+        for cx in -2..2 {
+            for cz in -2..2 {
+                for i in 0..256 {
+                    let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
+                    let h = t.column(3, x, z).height;
+                    let made = cube(&t, 3, [cx, h >> 4, cz])[((h & 15) as usize * 16 + i / 16) * 16 + i % 16];
+                    assert_eq!(made, t.surface_block(3, x, z), "at {x} {z}");
+                }
+            }
+        }
     }
 
     /// Lava lakes lie on stone, not in every open block between two heights (lava hanging

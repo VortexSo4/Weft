@@ -58,6 +58,11 @@ pub trait Screen: std::any::Any {
     fn key_up(&mut self, _key: Key, _ctx: &mut Ctx) -> bool {
         false
     }
+    /// Before the mouse goes to the nodes, each frame on top, cursor in GUI pixels: `true` takes
+    /// it this frame (dragging what the nodes alone cannot).
+    fn pointer(&mut self, _cursor: glam::Vec2, _ui: &mut Ui, _ctx: &mut Ctx) -> bool {
+        false
+    }
     /// Shows the open server menu: its slots take clicks, closing the screen closes the menu.
     fn shows_menu(&self) -> bool {
         false
@@ -101,7 +106,7 @@ pub fn named(name: &str) -> Option<Box<dyn Screen>> {
         "core:chat" => Box::new(crate::game_screens::Chat::new("")),
         "core:death" => Box::new(crate::game_screens::Death),
         "core:multiplayer" => Box::new(crate::net::screens::Multiplayer::default()),
-        "core:resource_packs" => Box::new(crate::packs::ResourcePacks),
+        "core:resource_packs" => Box::new(crate::packs::ResourcePacks::default()),
         "core:shader_packs" => Box::new(crate::packs::ShaderPacks),
         "core:sound" => Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }),
         "core:tags" => Box::new(crate::game_screens::TagList::default()),

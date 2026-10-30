@@ -140,6 +140,7 @@ const OPS: &[(&str, &str)] = &[
     ("drops", "<n:int>"),
     ("find", "<r:int> <block:block>"),
     ("census", "<r:int> <blocks:word>"),
+    ("cube_top_plants", "<r:int>"),
     ("onto", "<id:int> <h:float> [rider:int]"),
     ("navigate", "@owner <to:pos>"),
     ("structure", "<name:word> <r:int>"),
@@ -436,6 +437,25 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
                 }
             }
             Ok(names.iter().zip(&counts).map(|(n, k)| format!("{n}={k}")).collect::<Vec<_>>().join(" "))
+        }
+        "cube_top_plants" => {
+            // Land columns within `r` of the player, split by whether the ground is the top layer
+            // of its cube, and how many of each carry a plant: `tops plants others plants`.
+            let r: i32 = int(cmd, "r")?;
+            let plants: Vec<u32> = ["base:tall_grass", "base:dandelion", "base:rose"].iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
+            let mut n = [0u32; 4];
+            for z in me[2] - r..=me[2] + r {
+                for x in me[0] - r..=me[0] + r {
+                    let h = base_api::OVERWORLD.column(5, x, z).height;
+                    if h < 63 {
+                        continue;
+                    }
+                    let k = if (h + 1) & 15 == 0 { 0 } else { 2 };
+                    n[k] += 1;
+                    n[k + 1] += plants.contains(&block_of(w.get([x, h + 1, z]))) as u32;
+                }
+            }
+            Ok(format!("{} {} {} {}", n[0], n[1], n[2], n[3]))
         }
         "onto" => {
             // The player (or the rider) on top of an entity `h` high, in the same tick (moving

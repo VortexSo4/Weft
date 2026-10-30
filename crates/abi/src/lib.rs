@@ -1915,6 +1915,9 @@ pub struct Host {
     pub dim_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
     /// 1 if caves took the surface block of column (`x`, `z`), so nothing should stand there.
     pub dim_carved: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
+    /// The state the terrain leaves at the top of column (`x`, `z`): 0 where caves took it or the
+    /// dimension has no terrain.
+    pub dim_surface: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
 }
 
 /// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few

@@ -38,6 +38,28 @@ fn item(name: &str) -> u32 {
     Item::lookup(name).unwrap_or(u32::MAX)
 }
 
+/// F1 takes the hotbar, crosshair, hand and block outline off the picture, and F1 brings them back.
+pub async fn hide_hud(t: T) -> R {
+    t.flat().await?;
+    t.c().look(0.0, -40.0);
+    t.secs(0.6).await?;
+    let shown = t.shot("shown").await?;
+    t.press("core:hide_hud");
+    t.frames(4).await?;
+    let hidden = t.shot("hidden").await?;
+    t.press("core:hide_hud");
+    t.frames(4).await?;
+    let again = t.shot("again").await?;
+    let parts = [("hotbar", [0.35, 0.92, 0.65, 1.0], 0.1), ("crosshair", [0.49, 0.48, 0.51, 0.52], 0.05), ("hand", [0.7, 0.6, 1.0, 1.0], 0.01)];
+    for (name, [x0, y0, x1, y1], min) in parts {
+        let gone = changed(&shown.px, &hidden.px, shown.w, shown.h, x0, y0, x1, y1);
+        t.probe(&format!("{name} gone with F1"), gone, gone > min);
+        let back = changed(&shown.px, &again.px, shown.w, shown.h, x0, y0, x1, y1);
+        t.probe(&format!("{name} back with F1"), back, back < min / 4.0);
+    }
+    Ok(())
+}
+
 /// Items in the first person hand: each drawn in its own colors at the hand's place.
 pub async fn held_items(t: T) -> R {
     t.flat().await?;
