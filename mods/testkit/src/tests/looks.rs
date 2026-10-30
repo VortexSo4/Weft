@@ -5,7 +5,7 @@ use std::time::Duration;
 use weft_sdk::*;
 
 use super::{add, probe};
-use crate::runner::{R, T};
+use crate::runner::{R, T, lum};
 
 static SPARK: Particle = Particle::named("testmod:spark");
 
@@ -412,4 +412,56 @@ pub async fn gui_shader(t: T) -> R {
     t.probe("circuit lines in the panel", v, v > 0.01);
     t.c().close_screen();
     t.no_screen().await
+}
+
+/// The sky over the overworld at several times of day, and in the rain: the sun rising in +x, high
+/// at noon leaning to +z and setting in -x with a red glow, the moon and the stars at midnight.
+/// The pictures are for looking at; the checks are that day, night and an overcast noon differ.
+pub async fn sky(t: T) -> R {
+    t.world(3).await?;
+    t.op("mode creative").await?;
+    t.c().fly(true);
+    let s = t.state();
+    t.c().teleport([s.pos[0], s.pos[1] + 30.0, s.pos[2]]);
+    t.loaded().await?;
+    // yaw -90 looks to +x, 90 to -x, 180 to +z, 0 to -z; pitch up.
+    let mut seen = Vec::new();
+    for (name, time, yaw, pitch) in [("morning", 600, -90.0, 6.0), ("noon", 6000, 180.0, 55.0), ("day", 4000, 0.0, 25.0), ("sunset", 12300, 90.0, 6.0), ("midnight", 18000, 0.0, 55.0)] {
+        t.op(&format!("time {time}")).await?;
+        t.c().look(yaw, pitch);
+        // The server tells clients the time about once a second.
+        t.secs(1.5).await?;
+        let shot = t.shot(name).await?;
+        seen.push(lum(shot.avg(0.0, 0.0, 1.0, 0.4)));
+    }
+    // The base game's weather sets how overcast the sky is, fading over a few seconds.
+    t.op("time 4000").await?;
+    t.cmd("/weather rain").await?;
+    t.c().look(0.0, 25.0);
+    t.secs(8.0).await?;
+    let overcast = lum(t.shot("overcast").await?.avg(0.0, 0.0, 1.0, 0.4));
+    t.cmd("/weather clear").await?;
+
+    // Walking sways the camera, but the sky is infinitely far: looking up while walking, two
+    // pictures half a step apart show the same sky.
+    // Still creative, so the fall down from up here does no harm; the camera sways all the same.
+    t.secs(8.0).await?;
+    t.c().fly(false);
+    t.until("falling", Duration::from_secs(3), |t| t.state().vel[1] < -0.1).await?;
+    t.until("landed", Duration::from_secs(15), |t| t.flag(client::client_flags::ON_GROUND)).await?;
+    t.c().look(0.0, 60.0);
+    t.hold("core:forward", 2.0);
+    t.secs(0.6).await?;
+    let a = t.shot("walking_a").await?;
+    t.secs(0.27).await?;
+    let b = t.shot("walking_b").await?;
+    let top = |s: &crate::runner::Shot| s.px[..(s.w * s.h * 4 * 2 / 5) as usize].to_vec();
+    let moved = T::differ(&top(&a), &top(&b));
+    // Clouds drift on: a cell may appear between the two, the sky as a whole stays.
+    t.probe("sky that changed between two steps", moved as f32, moved < 0.06);
+
+    t.note(format!("sky brightness morning {:.0}, noon {:.0}, day {:.0}, sunset {:.0}, midnight {:.0}, overcast noon {overcast:.0}", seen[0], seen[1], seen[2], seen[3], seen[4]));
+    t.check(seen[4] < seen[2] * 0.4, "the night sky is dark");
+    t.check(overcast < seen[2] * 0.9, "an overcast sky is darker than a clear one");
+    Ok(())
 }

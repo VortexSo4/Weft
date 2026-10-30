@@ -8,6 +8,7 @@ mod mobs;
 mod player;
 mod recipes;
 mod sounds;
+mod weather;
 mod worldgen;
 
 use weft_sdk::*;
@@ -38,6 +39,7 @@ fn init(r: &mut Registry) {
     sounds::register(r);
     mobs::register(r);
     worldgen::register(r);
+    weather::register(r);
     // Its terrain is described in `worldgen`.
     r.dimension(&OVERWORLD)
         .player_spawn()

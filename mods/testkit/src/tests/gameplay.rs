@@ -278,6 +278,44 @@ pub async fn bucket(t: T) -> R {
     Ok(())
 }
 
+/// `/weather rain` rains where the player stands: the server says so, the client lets drops fall
+/// where the sky is open and grays the sky. Above the snow line it snows; `/weather clear` stops it.
+pub async fn weather(t: T) -> R {
+    use base_api::{WEATHER, Weather, precipitation};
+    fn here(t: &T) -> Weather {
+        t.c().view().component(&WEATHER).unwrap_or(Weather { strength: 0.0, kind: precipitation::NONE })
+    }
+    t.world(3).await?;
+    t.op("time 4000").await?;
+    t.cmd("/weather rain").await?;
+    t.until("rain where the player is", Duration::from_secs(5), |t| here(t).kind == precipitation::RAIN && here(t).strength == 1.0).await?;
+    t.until("drops falling", Duration::from_secs(6), |t| t.state().particles > 200).await?;
+    // The sky grays over a few seconds.
+    t.secs(4.0).await?;
+    t.c().look(0.0, 5.0);
+    t.frames(5).await?;
+    t.shot("rain").await?;
+
+    // On a platform above the snow line.
+    t.op("mode creative").await?;
+    t.c().fly(true);
+    let f = t.feet();
+    let top = [f[0], 160, f[2]];
+    t.fill(add(top, [-10, 0, -10]), add(top, [10, 0, 10]), "stone").await?;
+    t.c().teleport([f[0] as f64 + 0.5, 161.0, f[2] as f64 + 0.5]);
+    t.until("snow up high", Duration::from_secs(5), |t| here(t).kind == precipitation::SNOW).await?;
+    t.secs(5.0).await?;
+    t.c().look(0.0, 0.0);
+    t.frames(5).await?;
+    t.shot("snow").await?;
+
+    t.cmd("/weather clear").await?;
+    t.until("clear", Duration::from_secs(5), |t| here(t).kind == precipitation::NONE && here(t).strength == 0.0).await?;
+    // Snowflakes live up to 6.5 s.
+    t.until("nothing falling", Duration::from_secs(10), |t| t.state().particles == 0).await?;
+    Ok(())
+}
+
 /// 12 blocks down costs 9 health like vanilla.
 pub async fn fall_damage(t: T) -> R {
     t.flat().await?;

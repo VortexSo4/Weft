@@ -26,6 +26,22 @@ value! {
 pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
 
 value! {
+    /// The weather where a player is, from the server: how strong it is (0 clear .. 1 a storm,
+    /// for the whole overworld) and what falls there (`precipitation::*`, by the biome).
+    pub struct Weather { pub strength: f32, pub kind: u32 }
+}
+pub static WEATHER: Component<Weather> = Component::named("base:weather");
+
+/// `Weather::kind`.
+pub mod precipitation {
+    /// Clear, or a biome where nothing falls (the desert still turns gray).
+    pub const NONE: u32 = 0;
+    pub const RAIN: u32 = 1;
+    /// Cold biomes and high up.
+    pub const SNOW: u32 = 2;
+}
+
+value! {
     /// Read by the hunger system; other mods set it on their own food.
     pub struct Food { pub hunger: u32, pub saturation: f32 }
 }
