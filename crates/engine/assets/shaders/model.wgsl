@@ -36,7 +36,16 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         let grow = cub.inflate + inst.inflate;
         let local = cub.origin - vec3(grow) + CORNERS[face * 4u + c] * (cub.size + vec3(2.0 * grow));
         world = place(inst.bones + cub.bone, local);
-        let r = cub.faces[face];
+        // Constant indices: SPIRV-Cross cannot copy a runtime-indexed array out of a storage buffer to Metal.
+        var r: vec4<f32>;
+        switch face {
+            case 0u: { r = cub.faces[0]; }
+            case 1u: { r = cub.faces[1]; }
+            case 2u: { r = cub.faces[2]; }
+            case 3u: { r = cub.faces[3]; }
+            case 4u: { r = cub.faces[4]; }
+            default: { r = cub.faces[5]; }
+        }
         out.uv = (r.xy + UVS[c] * r.zw) / inst.tex_size;
         shade = SHADE[face];
     } else {
