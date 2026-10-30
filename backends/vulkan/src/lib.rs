@@ -176,6 +176,26 @@ fn err<E: std::fmt::Debug>(what: &str) -> impl FnOnce(E) -> Error + '_ {
     move |e| Error(format!("{what}: {e:?}"))
 }
 
+/// The system's Vulkan loader. macOS has none of its own and Homebrew's prefix is not searched,
+/// so there it is also looked for by path, and MoltenVK can stand in for the loader.
+unsafe fn load_vulkan() -> Result<ash::Entry, Error> {
+    let first = match unsafe { ash::Entry::load() } {
+        Ok(entry) => return Ok(entry),
+        Err(e) => e,
+    };
+    if cfg!(target_os = "macos") {
+        for dir in ["", "/opt/homebrew/lib/", "/usr/local/lib/"] {
+            for lib in ["libvulkan.1.dylib", "libvulkan.dylib", "libMoltenVK.dylib"] {
+                if let Ok(entry) = unsafe { ash::Entry::load_from(format!("{dir}{lib}")) } {
+                    return Ok(entry);
+                }
+            }
+        }
+        return Err(Error(format!("loading Vulkan: {first:?}. On macOS it comes from MoltenVK: brew install molten-vk vulkan-loader")));
+    }
+    Err(Error(format!("loading Vulkan: {first:?}")))
+}
+
 impl VulkanBackend {
     pub fn new(desc: &BackendDesc) -> Result<VulkanBackend, Error> {
         unsafe { Self::create(desc) }
@@ -183,7 +203,7 @@ impl VulkanBackend {
 
     unsafe fn create(desc: &BackendDesc) -> Result<VulkanBackend, Error> {
         unsafe {
-            let entry = ash::Entry::load().map_err(err("loading Vulkan"))?;
+            let entry = load_vulkan()?;
             let display = desc.window.display_handle().map_err(err("display handle"))?.as_raw();
             let window = desc.window.window_handle().map_err(err("window handle"))?.as_raw();
 
@@ -204,6 +224,16 @@ impl VulkanBackend {
                 log::warn!("validation layer requested but not installed");
             }
 
+            // MoltenVK is a portability driver: the loader hides those unless asked to list them.
+            let portability = cfg!(target_os = "macos")
+                && entry
+                    .enumerate_instance_extension_properties(None)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|e| e.extension_name_as_c_str() == Ok(khr::portability_enumeration::NAME));
+            if portability {
+                exts.push(khr::portability_enumeration::NAME.as_ptr());
+            }
             let app = vk::ApplicationInfo::default()
                 .application_name(c"Weft")
                 .engine_name(c"Weft")
@@ -211,6 +241,7 @@ impl VulkanBackend {
             let instance = entry
                 .create_instance(
                     &vk::InstanceCreateInfo::default()
+                        .flags(if portability { vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR } else { vk::InstanceCreateFlags::empty() })
                         .application_info(&app)
                         .enabled_extension_names(&exts)
                         .enabled_layer_names(&layers),
@@ -274,6 +305,36 @@ impl VulkanBackend {
                 return Err(Error(format!("{device_name} can bind {images} textures at once, the game needs {MAX_TEXTURES}")));
             }
 
+            let mut has11 = vk::PhysicalDeviceVulkan11Features::default();
+            let mut has12 = vk::PhysicalDeviceVulkan12Features::default();
+            let mut has13 = vk::PhysicalDeviceVulkan13Features::default();
+            let mut has = vk::PhysicalDeviceFeatures2::default().push_next(&mut has11).push_next(&mut has12).push_next(&mut has13);
+            instance.get_physical_device_features2(pdev, &mut has);
+            let base = has.features;
+            let missing: Vec<&str> = [
+                ("multiDrawIndirect", base.multi_draw_indirect),
+                ("drawIndirectFirstInstance", base.draw_indirect_first_instance),
+                ("samplerAnisotropy", base.sampler_anisotropy),
+                ("fillModeNonSolid", base.fill_mode_non_solid),
+                ("shaderInt16", base.shader_int16),
+                ("storageBuffer16BitAccess", has11.storage_buffer16_bit_access),
+                ("descriptorIndexing", has12.descriptor_indexing),
+                ("runtimeDescriptorArray", has12.runtime_descriptor_array),
+                ("descriptorBindingPartiallyBound", has12.descriptor_binding_partially_bound),
+                ("descriptorBindingSampledImageUpdateAfterBind", has12.descriptor_binding_sampled_image_update_after_bind),
+                ("shaderSampledImageArrayNonUniformIndexing", has12.shader_sampled_image_array_non_uniform_indexing),
+                ("scalarBlockLayout", has12.scalar_block_layout),
+                ("dynamicRendering", has13.dynamic_rendering),
+                ("synchronization2", has13.synchronization2),
+            ]
+            .into_iter()
+            .filter(|f| f.1 == vk::FALSE)
+            .map(|f| f.0)
+            .collect();
+            if !missing.is_empty() {
+                return Err(Error(format!("{device_name} lacks what the game needs: {}", missing.join(", "))));
+            }
+
             let features = vk::PhysicalDeviceFeatures::default()
                 .multi_draw_indirect(true)
                 .draw_indirect_first_instance(true)
@@ -287,7 +348,8 @@ impl VulkanBackend {
                 .descriptor_binding_partially_bound(true)
                 .descriptor_binding_sampled_image_update_after_bind(true)
                 .shader_sampled_image_array_non_uniform_indexing(true)
-                .draw_indirect_count(true)
+                // Metal has no such draw, and nothing needs it yet.
+                .draw_indirect_count(has12.draw_indirect_count != vk::FALSE)
                 .scalar_block_layout(true);
             let mut f13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true).synchronization2(true);
             let mut f2 = vk::PhysicalDeviceFeatures2::default()
@@ -295,7 +357,11 @@ impl VulkanBackend {
                 .push_next(&mut f11)
                 .push_next(&mut f12)
                 .push_next(&mut f13);
-            let dev_exts = [khr::swapchain::NAME.as_ptr(), khr::push_descriptor::NAME.as_ptr()];
+            let mut dev_exts = vec![khr::swapchain::NAME.as_ptr(), khr::push_descriptor::NAME.as_ptr()];
+            // A driver that has this extension requires it to be enabled.
+            if instance.enumerate_device_extension_properties(pdev).unwrap_or_default().iter().any(|e| e.extension_name_as_c_str() == Ok(khr::portability_subset::NAME)) {
+                dev_exts.push(khr::portability_subset::NAME.as_ptr());
+            }
             let prio = [1.0];
             let qinfo = [vk::DeviceQueueCreateInfo::default().queue_family_index(queue_family).queue_priorities(&prio)];
             let device = instance
