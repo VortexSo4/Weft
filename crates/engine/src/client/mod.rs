@@ -810,7 +810,7 @@ impl Client {
                 }
                 ToClient::Particles(list) => {
                     for b in &list {
-                        self.particles.spawn(b);
+                        self.particles.spawn(b, &self.world);
                     }
                 }
                 _ => {}
@@ -1289,7 +1289,7 @@ impl Client {
                     let at = pos.as_dvec3() + self.frame_origin(frame) + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
                     let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
                     let velocity = (normal * 0.6).to_array();
-                    self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..weft_abi::ParticleBurst::DEFAULT });
+                    self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..weft_abi::ParticleBurst::DEFAULT }, &self.world);
                 }
             }
         }
@@ -1385,7 +1385,7 @@ impl Client {
             let kind = kinds.get(self.world.block(p) as usize).copied().unwrap_or(u32::MAX);
             if kind != u32::MAX {
                 let pos = [p.x as f64 + 0.5, p.y as f64 + 0.9, p.z as f64 + 0.5];
-                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos, spread: [0.3, 0.2, 0.3], speed: 0.3, count: 1, ..weft_abi::ParticleBurst::DEFAULT });
+                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos, spread: [0.3, 0.2, 0.3], speed: 0.3, count: 1, ..weft_abi::ParticleBurst::DEFAULT }, &self.world);
             }
         }
     }
@@ -1402,7 +1402,7 @@ impl Client {
             if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) {
                 let (w, h) = (k.width * 0.5, k.height * 0.5);
                 let at = (pos + DVec3::Y * h as f64).to_array();
-                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..weft_abi::ParticleBurst::DEFAULT });
+                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..weft_abi::ParticleBurst::DEFAULT }, &self.world);
             }
             return;
         }

@@ -109,7 +109,7 @@ fn init(r: &mut Registry) {
     r.system(&WORK, tick_furnaces);
     // Machines' sounds have their own category (and volume setting `testmod:volume_machines`).
     r.sound_category(&MACHINES, true);
-    r.sound(&HUM).files(&["base:dig/stone1"]).category(&MACHINES).pitch(0.45, 0.5);
+    r.sound(&HUM).files(&["test/thump"]).category(&MACHINES).pitch(0.45, 0.5);
     r.machine(&GENERATOR, &GENERATOR_MENU)
         .block(|b| b.textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
@@ -353,7 +353,7 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
 /// loaded gets it when it loads.
 fn dynamite(r: &mut Registry) {
     r.config(&DYNAMITE_RADIUS).int(500, 4, 2000).server();
-    r.sound(&BOOM).files(&["base:dig/stone1"]).pitch(0.2, 0.3);
+    r.sound(&BOOM).files(&["test/thump"]).pitch(0.2, 0.3);
     r.block(&DYNAMITE)
         .prop("fuse", 0..=10)
         .states(|p, s| {

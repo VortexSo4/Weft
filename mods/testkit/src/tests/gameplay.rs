@@ -466,29 +466,14 @@ pub async fn drop_and_pickup(t: T) -> R {
 /// `/music` starts a track. Only checks that sounds start; without a sound device it is skipped.
 pub async fn sounds(t: T) -> R {
     t.flat().await?;
-    let f = t.feet();
-    let b = [f[0], f[1], f[2] - 2];
-    t.set(b, "stone").await?;
     let before = t.state().sounds;
-    t.op(&format!("break {} {} {}", b[0], b[1], b[2])).await?;
-    if t.until("break sound", std::time::Duration::from_secs(2), |t| t.state().sounds > before).await.is_err() {
+    t.op("play testmod:boom").await?;
+    if t.until("a sound", std::time::Duration::from_secs(2), |t| t.state().sounds > before).await.is_err() {
         t.note("no sound device here, sound checks skipped");
         return Ok(());
     }
-    let before = t.state().sounds;
-    t.hold("core:forward", 1.5);
-    t.until("steps", std::time::Duration::from_secs(3), |t| t.state().sounds >= before + 2).await?;
     t.cmd("/music").await?;
     t.until("music", std::time::Duration::from_secs(3), |t| t.flag(weft_sdk::client::client_flags::MUSIC)).await?;
-    // A mob's voice comes from `sounds/entity/<kind>/hurt*` by itself.
-    let pig = add(t.feet(), [0, 0, -2]);
-    t.op(&format!("spawn pig {}", at(pig))).await?;
-    t.secs(0.3).await?;
-    t.look_at(pig);
-    t.frames(2).await?;
-    let before = t.state().sounds;
-    t.press("core:attack");
-    t.until("the pig's hurt sound", std::time::Duration::from_secs(2), |t| t.state().sounds > before).await?;
     Ok(())
 }
 

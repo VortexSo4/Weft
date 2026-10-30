@@ -141,6 +141,7 @@ const OPS: &[(&str, &str)] = &[
     ("find", "<r:int> <block:block>"),
     ("census", "<r:int> <blocks:word>"),
     ("cube_top_plants", "<r:int>"),
+    ("play", "<sound:word>"),
     ("onto", "<id:int> <h:float> [rider:int]"),
     ("navigate", "@owner <to:pos>"),
     ("structure", "<name:word> <r:int>"),
@@ -437,6 +438,13 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
                 }
             }
             Ok(names.iter().zip(&counts).map(|(n, k)| format!("{n}={k}")).collect::<Vec<_>>().join(" "))
+        }
+        "play" => {
+            // A sound event at the player, by name.
+            static BOOM: Sound = Sound::named("testmod:boom");
+            let _ = word(cmd, "sound")?;
+            w.play_sound(&BOOM, [me[0] as f64, me[1] as f64, me[2] as f64], 1.0);
+            Ok(String::new())
         }
         "cube_top_plants" => {
             // Land columns within `r` of the player, split by whether the ground is the top layer

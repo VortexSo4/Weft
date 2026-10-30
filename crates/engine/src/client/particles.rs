@@ -43,6 +43,8 @@ struct Particle {
     piece: [u8; 2],
     cell: IVec3,
     light: u32,
+    /// What the block's biome colors it (0xRRGGBB): grass and leaves are gray without it.
+    tint: u32,
 }
 
 pub struct Particles {
@@ -110,7 +112,7 @@ impl Particles {
         self.rng.float()
     }
 
-    pub fn spawn(&mut self, b: &ParticleBurst) {
+    pub fn spawn(&mut self, b: &ParticleBurst, world: &ClientWorld) {
         let c = content();
         let Some(k) = c.game.particles.get(b.kind as usize) else { return };
         let pos = DVec3::from_array(b.pos);
@@ -122,7 +124,15 @@ impl Particles {
             Some(b) if s.model == weft_abi::Model::Boxes => b.textures[1],
             _ => s.textures[1],
         };
-        let layer = if k.frames.is_empty() { c.states.get(b.block as usize).map_or(0, side) } else { 0 };
+        let dust = c.states.get(b.block as usize).filter(|_| k.frames.is_empty());
+        let layer = dust.map_or(0, side);
+        // Only if the side it shows is a tinted one: grass blocks' sides are dirt with a tinted
+        // overlay, and their dust stays brown like vanilla's.
+        let tint = dust.filter(|s| s.tint != 0 && s.tint_faces & 2 != 0).map_or(0xFF_FFFF, |s| {
+            let p = pos.floor().as_ivec3();
+            let biome = world.cube(p >> 4i32).map_or(0, |cube| cube.biome((p.x & 15) as usize, (p.z & 15) as usize));
+            c.biomes.get(biome as usize).and_then(|b| b.tints.get(s.tint as usize - 1)).copied().unwrap_or_else(|| crate::content::item_tint(s.tint))
+        });
         let n = (b.count as usize).min(MAX.saturating_sub(self.list.len()));
         for _ in 0..n {
             let mut r3 = || Vec3::new(self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0);
@@ -147,6 +157,7 @@ impl Particles {
                 piece,
                 cell: IVec3::MAX,
                 light: 0,
+                tint,
             });
         }
     }
@@ -214,6 +225,10 @@ impl Particles {
             };
             ch(24) | ch(16) | ch(8) | ch(0)
         };
+        let tinted = |color: u32, tint: u32| -> u32 {
+            let ch = |s: u32, t: u32| ((color >> s & 255) * (tint >> t & 255) / 255) << s;
+            ch(24, 16) | ch(16, 8) | ch(8, 0) | (color & 255)
+        };
         self.gpu.clear();
         let mut blended_from = 0;
         for pass in [false, true] {
@@ -238,7 +253,7 @@ impl Particles {
                 let rel = (p.pos - cam.pos).as_vec3();
                 self.gpu.push(GpuParticle {
                     pos_size: [rel.x, rel.y, rel.z, size],
-                    data: [mix(k.color, k.color_end, t), tex & crate::gpu_layout::particle::TEX_MASK | self.kind_slots.get(p.kind as usize).copied().unwrap_or(0) << crate::gpu_layout::particle::SLOT_SHIFT, uv, light],
+                    data: [tinted(mix(k.color, k.color_end, t), p.tint), tex & crate::gpu_layout::particle::TEX_MASK | self.kind_slots.get(p.kind as usize).copied().unwrap_or(0) << crate::gpu_layout::particle::SLOT_SHIFT, uv, light],
                     extra: [t, 0.0, 0.0, 0.0],
                 });
             }

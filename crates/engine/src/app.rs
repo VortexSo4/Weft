@@ -733,7 +733,7 @@ impl Running {
             debug: self.debug,
             top: None,
         };
-        if screen.pointer(cursor, ui, &mut ctx) {
+        if screen.pointer(cursor, ui, &mut ctx, &mut self.hud) {
             self.quads_dirty = true;
             return;
         }
@@ -1438,6 +1438,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             r.f3_combo = Some(true);
         }
+        // F3+F6: which lines the overlay has.
+        if r.input.pressed_key(Key::Code(KeyCode::F6)) {
+            if r.screens.is_empty() {
+                r.open(screens::engine("core:debug_options"));
+            }
+            r.f3_combo = Some(true);
+        }
         for (key, group) in [(KeyCode::KeyG, "cubes"), (KeyCode::KeyB, "hitboxes")] {
             if r.input.pressed_key(Key::Code(key)) {
                 if let Some(g) = &mut r.game {
@@ -1619,6 +1626,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
 
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.shows_chat());
+        if r.hud.editing() && !r.screens.last().is_some_and(|(s, _)| s.name() == "core:hud_editor") {
+            r.hud.set_edit(None);
+        }
         if r.hud.update(&g.client, r.debug, r.settings.debug_groups(), chat_open, &r.lang, &r.input) {
             r.quads_dirty = true;
         }

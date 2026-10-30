@@ -121,7 +121,9 @@ The main menu's logo is the GUI texture `logo` (drawn across the menu bar in who
 
 F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.
 
-The engine's own parts are elements like these, `core:hotbar` and `core:held_name`, and a player moves any of them with lines in `config/hud.txt`: `core:held_name = top_left` or `base:food = top_right 2` (anchor, then order).
+The engine's own parts are elements like these: `core:hotbar`, `core:held_name`, `core:crosshair`, `core:chat` and the F3 panels, `core:debug.<group>`. Players arrange all of them, yours too, in **Settings > Arrange HUD**: drag to move, right click to hide. You don't do anything for it, your element just needs a name, and `hud.element.<mod>.<name>` in your lang file is what the editor calls it. It ends up in `config/hud.txt`, which can be edited by hand too: `base:food = top_right 2` (anchor, then order), `core:hotbar = at 0.5 1 0 -4` (a point of the window and of the element, then GUI pixels from there), and `hidden` at the end of either.
+
+F3+F6 says when each line of the F3 overlay shows: with F3, always or never. A line set to always stays on the HUD without F3, and the editor can move it like the rest. A mod's F3 panel is one row there.
 
 Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
 

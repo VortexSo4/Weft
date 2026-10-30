@@ -492,8 +492,9 @@ pub unsafe extern "C" fn client_entities(c: *mut abi::ClientCtx, out: *mut u64, 
 pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out: *mut [f32; 4]) -> u32 {
     unsafe {
         let Some(r) = run(c) else { return 0 };
-        let ui = r.screens.last().map_or(&r.hud.ui, |s| &s.1);
         let q = query.as_str();
+        // `id:hud:<element>` is on the overlay whatever screen is open (the HUD editor's).
+        let ui = if q.starts_with("id:hud:") { &r.hud.ui } else { r.screens.last().map_or(&r.hud.ui, |s| &s.1) };
         let found = if let Some(n) = q.strip_prefix("slot:").and_then(|n| n.parse::<u64>().ok()) {
             ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_SLOT, data } if data == n))
         } else if let Some(n) = q.strip_prefix("item:").and_then(|n| n.parse::<u64>().ok()) {
@@ -576,7 +577,7 @@ pub unsafe extern "C" fn client_particles(c: *mut abi::ClientCtx, burst: *const 
     unsafe {
         let Some(r) = run(c) else { return };
         if let Some(g) = r.game.as_mut() {
-            g.client.particles.spawn(&*burst);
+            g.client.particles.spawn(&*burst, &g.client.world);
         }
     }
 }

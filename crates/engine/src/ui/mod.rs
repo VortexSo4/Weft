@@ -437,6 +437,14 @@ impl Ui {
         id
     }
 
+    /// Takes a closed node with nothing in it out of its parent, as if it was never added.
+    pub fn unlink_if_empty(&mut self, id: NodeId) {
+        if self.nodes[id].children.is_empty() {
+            let parent = *self.stack.last().unwrap();
+            self.nodes[parent].children.retain(|&c| c != id);
+        }
+    }
+
     pub fn container(&mut self, style: Style, f: impl FnOnce(&mut Ui)) -> NodeId {
         self.with(Kind::Container { class: None }, style, f)
     }

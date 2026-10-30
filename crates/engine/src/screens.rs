@@ -60,7 +60,7 @@ pub trait Screen: std::any::Any {
     }
     /// Before the mouse goes to the nodes, each frame on top, cursor in GUI pixels: `true` takes
     /// it this frame (dragging what the nodes alone cannot).
-    fn pointer(&mut self, _cursor: glam::Vec2, _ui: &mut Ui, _ctx: &mut Ctx) -> bool {
+    fn pointer(&mut self, _cursor: glam::Vec2, _ui: &mut Ui, _ctx: &mut Ctx, _hud: &mut crate::hud::Hud) -> bool {
         false
     }
     /// Shows the open server menu: its slots take clicks, closing the screen closes the menu.
@@ -109,6 +109,8 @@ pub fn named(name: &str) -> Option<Box<dyn Screen>> {
         "core:resource_packs" => Box::new(crate::packs::ResourcePacks::default()),
         "core:shader_packs" => Box::new(crate::packs::ShaderPacks),
         "core:sound" => Box::new(ConfigScreen { ns: None }),
+        "core:hud_editor" => Box::new(crate::hud_editor::HudEditor::default()),
+        "core:debug_options" => Box::new(crate::hud_editor::DebugOptions),
         "core:tags" => Box::new(crate::game_screens::TagList::default()),
         "core:mods" => Box::new(ModList::default()),
         "core:profile" => Box::new(Profile::default()),
@@ -519,6 +521,9 @@ impl Screen for SettingsScreen {
                             d.button(a, &[], 147.0, true, screen(sa));
                             d.button(b, &[], 147.0, true, screen(sb));
                         });
+                    }
+                    if cx.in_game {
+                        d.button("settings.hud", &[], 300.0, false, screen("core:hud_editor"));
                     }
                     d.parts("core:settings", "buttons");
                 });

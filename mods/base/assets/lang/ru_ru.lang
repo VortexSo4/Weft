@@ -142,3 +142,7 @@ tab.base.ingredients = Ингредиенты
 recipe.base.crafting = Крафт
 recipe.base.smelting = Плавка
 command.base.feed = сытость теперь {0}
+hud.element.base.health = Здоровье
+hud.element.base.armor = Броня
+hud.element.base.food = Сытость
+hud.element.base.air = Воздух

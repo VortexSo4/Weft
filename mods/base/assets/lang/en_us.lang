@@ -171,3 +171,7 @@ mod.base.authors = vortex_so
 menu.news = {align:center}{img:base:icon_settings 16x16}{/align}
     {align:center}Weft is in development.{/align}
 command.base.feed = food set to {0}
+hud.element.base.health = Health
+hud.element.base.armor = Armor
+hud.element.base.food = Food
+hud.element.base.air = Air

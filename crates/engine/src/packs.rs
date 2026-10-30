@@ -176,7 +176,7 @@ impl Screen for ResourcePacks {
         true
     }
 
-    fn pointer(&mut self, cursor: glam::Vec2, ui: &mut Ui, ctx: &mut Ctx) -> bool {
+    fn pointer(&mut self, cursor: glam::Vec2, ui: &mut Ui, ctx: &mut Ctx, _hud: &mut crate::hud::Hud) -> bool {
         let Some(id) = self.dragging.clone() else {
             let handle = ui.hit(cursor).and_then(|h| ui.nodes[h].id.as_deref()).and_then(|i| i.strip_prefix("pack_handle:"));
             let Some(id) = handle.filter(|_| ctx.input.pressed_button(0)) else { return false };

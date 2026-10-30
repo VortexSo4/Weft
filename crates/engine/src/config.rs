@@ -162,6 +162,10 @@ pub fn by_name(name: &str) -> Option<u32> {
     content().game.config_names.get(name).copied()
 }
 
+pub fn automated() -> bool {
+    AUTOMATED.load(Ordering::Relaxed)
+}
+
 pub fn set_automated(on: bool) {
     AUTOMATED.store(on, Ordering::Relaxed);
 }
@@ -296,6 +300,7 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::number("core:invert_y", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:toggle_sneak", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:toggle_sprint", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
+        ConfigDef::text("core:debug_lines", ""),
         ConfigDef::text("core:name", &user),
         ConfigDef::text("core:relays", ""),
         ConfigDef::text("core:resource_packs", ""),

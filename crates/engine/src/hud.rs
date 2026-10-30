@@ -16,39 +16,248 @@ use crate::ui::{Align, Justify, Kind, Rect, Style, Ui};
 
 pub const TAG_HOTBAR: u32 = 1;
 
-/// One element of the HUD: the engine's hotbar or held item name, or a mod's part.
+/// One element of the HUD: everything drawn over the world is one, the engine's and mods', and
+/// goes through the same placing, so a player can arrange all of it (`hud_editor`).
 #[derive(Clone, Copy)]
 enum Part {
     Hotbar,
     HeldName,
+    Crosshair,
+    Chat,
+    /// `DEBUG_GROUPS[i]`.
+    DebugGroup(usize),
+    /// `mod_debug_groups()[i]`.
+    DebugMod(usize),
+    DebugHelp,
     Mod(weft_abi::ModId, weft_abi::Callback),
 }
 pub const TAG_CROSSHAIR: u32 = 2;
 
+/// A player's say on one element (`config/hud.txt`): its place in an anchor's flow or a free spot,
+/// and whether it shows.
+#[derive(Clone, Default)]
+pub struct Placement {
+    flow: Option<(String, i32)>,
+    /// `[ax, ay, x, y]`: this point of the element (fractions of its size) lies at the same point
+    /// of the window, moved by (x, y) GUI pixels.
+    at: Option<[f32; 4]>,
+    hidden: bool,
+}
+
+impl Placement {
+    /// `base:food = top_right 2`, `core:hotbar = at 0.5 1 0 -4`, either or neither followed by
+    /// `hidden`.
+    fn parse(value: &str) -> Placement {
+        let mut words: Vec<&str> = value.split_whitespace().collect();
+        let hidden = words.last() == Some(&"hidden");
+        if hidden {
+            words.pop();
+        }
+        let mut p = Placement { hidden, ..Default::default() };
+        match words.as_slice() {
+            ["at", rest @ ..] => {
+                let n: Vec<f32> = rest.iter().filter_map(|v| v.parse().ok()).collect();
+                if let [ax, ay, x, y] = n[..] {
+                    p.at = Some([ax, ay, x, y]);
+                }
+            }
+            [anchor, rest @ ..] => p.flow = Some((anchor.to_string(), rest.first().and_then(|o| o.parse().ok()).unwrap_or(0))),
+            [] => {}
+        }
+        p
+    }
+
+    fn value(&self) -> String {
+        let place = match (&self.at, &self.flow) {
+            (Some([ax, ay, x, y]), _) => format!("at {ax} {ay} {x} {y}"),
+            (None, Some((anchor, order))) => format!("{anchor} {order}"),
+            (None, None) => String::new(),
+        };
+        if self.hidden { format!("{place} hidden").trim().to_string() } else { place }
+    }
+}
+
+/// What the HUD editor wants shown, while it is open.
+#[derive(Clone, Default, PartialEq)]
+pub struct Edit {
+    pub selected: Option<String>,
+    pub labels: bool,
+    /// The F3 panels are there to place, F3 or not.
+    pub debug: bool,
+}
+
+/// When a line of the F3 overlay shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum LineState {
+    #[default]
+    WithF3,
+    Always,
+    Never,
+}
+
+impl LineState {
+    pub fn next(self) -> LineState {
+        match self {
+            LineState::WithF3 => LineState::Always,
+            LineState::Always => LineState::Never,
+            LineState::Never => LineState::WithF3,
+        }
+    }
+
+    /// Its name on the debug options screen.
+    pub fn key(self) -> &'static str {
+        match self {
+            LineState::WithF3 => "hud.options.with_f3",
+            LineState::Always => "hud.options.always",
+            LineState::Never => "hud.options.never",
+        }
+    }
+}
+
+const DEBUG_LINES: &str = "core:debug_lines";
+
+/// The lines not at their default (`core:debug_lines`: `fps=always,cube=never`).
+pub fn debug_lines() -> rustc_hash::FxHashMap<String, LineState> {
+    let text = crate::config::by_name(DEBUG_LINES).map_or(String::new(), crate::config::text);
+    text.split(',')
+        .filter_map(|e| {
+            let (id, state) = e.split_once('=')?;
+            Some((id.to_string(), match state {
+                "always" => LineState::Always,
+                "never" => LineState::Never,
+                _ => return None,
+            }))
+        })
+        .collect()
+}
+
+pub fn set_debug_line(id: &str, state: LineState) {
+    let mut lines = debug_lines();
+    lines.remove(id);
+    if state != LineState::WithF3 {
+        lines.insert(id.to_string(), state);
+    }
+    let mut parts: Vec<String> = lines.iter().map(|(id, s)| format!("{id}={}", if *s == LineState::Always { "always" } else { "never" })).collect();
+    parts.sort();
+    if let Some(cfg) = crate::config::by_name(DEBUG_LINES) {
+        crate::config::set_text(cfg, &parts.join(","));
+    }
+}
+
+pub fn reset_debug_lines() {
+    if let Some(cfg) = crate::config::by_name(DEBUG_LINES) {
+        crate::config::set_text(cfg, "");
+    }
+}
+
+/// A line's id: its translation key without the common part.
+pub fn line_id(key: &str) -> &str {
+    if key.is_empty() { "mods" } else { key.strip_prefix("hud.debug.").unwrap_or(key) }
+}
+
+/// What the editor calls element `name`: `hud.element.<ns>.<name>`, else the name itself.
+pub fn element_title(lang: &Lang, name: &str) -> Vec<text::Span> {
+    let key = text::lang_key("hud.element", name);
+    if let Some(m) = mod_debug_groups().iter().find(|m| m.3 == name) {
+        return text::rich(lang.get(m.0), lang, None);
+    }
+    if lang.has(&key) { text::rich(lang.get(&key), lang, None) } else { text::plain(name) }
+}
+
+/// One element of this build: where it goes and what draws it.
+struct Placed {
+    name: String,
+    anchor: String,
+    order: i32,
+    part: Part,
+    at: Option<[f32; 4]>,
+    hidden: bool,
+}
+
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool, u32, u8, bool, (u32, u32, u8))>,
-    /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
-    layout: rustc_hash::FxHashMap<String, (String, i32)>,
+    key: Option<(bool, usize, usize, bool, u32, u8, (i32, i32), (u32, u32, u8))>,
+    /// Player overrides from `config/hud.txt` by element name.
+    layout: rustc_hash::FxHashMap<String, Placement>,
+    file: std::path::PathBuf,
+    edit: Option<Edit>,
+    /// The elements of the current tree.
+    names: Vec<String>,
 }
 
 impl Hud {
-    /// Reads `config/hud.txt`: lines `element = anchor [order]`, e.g. `base:food = top_right`.
+    /// Reads the player's arrangement. An automated run keeps its own beside it, so that what a
+    /// test sees never depends on it.
     pub fn load_layout(&mut self, run_dir: &std::path::Path) {
+        let dir = if crate::config::automated() { "test-config" } else { "config" };
+        self.file = run_dir.join(dir).join("hud.txt");
         self.layout.clear();
-        let src = std::fs::read_to_string(run_dir.join("config").join("hud.txt")).unwrap_or_default();
+        let src = std::fs::read_to_string(&self.file).unwrap_or_default();
         for (_, name, v) in crate::kv::pairs(&src) {
-            let mut it = v.split_whitespace();
-            let Some(anchor) = it.next() else { continue };
-            let order = it.next().and_then(|o| o.parse().ok()).unwrap_or(0);
-            self.layout.insert(name.trim().to_string(), (anchor.to_string(), order));
+            self.layout.insert(name.to_string(), Placement::parse(v));
         }
         self.key = None;
     }
 
+    /// Writes the arrangement back.
+    pub fn save(&self) {
+        let mut lines: Vec<String> = self.layout.iter().map(|(name, p)| (name, p.value())).filter(|(_, v)| !v.is_empty()).map(|(name, v)| format!("{name} = {v}\n")).collect();
+        lines.sort();
+        let _ = self.file.parent().map(std::fs::create_dir_all);
+        if let Err(e) = std::fs::write(&self.file, lines.concat()) {
+            log::error!("saving {}: {e}", self.file.display());
+        }
+    }
+
     pub fn invalidate(&mut self) {
         self.key = None;
+    }
+
+    pub fn editing(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    pub fn set_edit(&mut self, edit: Option<Edit>) {
+        if self.edit != edit {
+            self.edit = edit;
+            self.key = None;
+        }
+    }
+
+    pub fn element_rect(&self, name: &str) -> Option<Rect> {
+        self.ui.find(&format!("hud:{name}")).map(|n| self.ui.nodes[n].rect)
+    }
+
+    /// The smallest element under a point, so one lying inside another can be reached.
+    pub fn element_at(&self, p: glam::Vec2) -> Option<String> {
+        let area = |r: &Rect| r.w * r.h;
+        self.names.iter().filter_map(|n| self.element_rect(n).filter(|r| r.contains(p)).map(|r| (n, r))).min_by(|a, b| area(&a.1).total_cmp(&area(&b.1))).map(|f| f.0.clone())
+    }
+
+    pub fn place(&mut self, name: &str, at: [f32; 4]) {
+        self.layout.entry(name.to_string()).or_default().at = Some(at);
+        self.key = None;
+    }
+
+    pub fn toggle_hidden(&mut self, name: &str) {
+        let p = self.layout.entry(name.to_string()).or_default();
+        p.hidden = !p.hidden;
+        self.key = None;
+        self.save();
+    }
+
+    /// Back to where its mod or the engine put it.
+    pub fn reset(&mut self, name: &str) {
+        self.layout.remove(name);
+        self.key = None;
+        self.save();
+    }
+
+    pub fn reset_all(&mut self) {
+        self.layout.clear();
+        self.key = None;
+        self.save();
     }
 
     /// Returns true if the tree was rebuilt.
@@ -59,35 +268,68 @@ impl Hud {
         // The held item's name shows for two seconds after a change, fading for the last half.
         let (held, since) = client.held_name;
         let fade = if held.is_empty() { 0 } else { ((2.0 - since.elapsed().as_secs_f32()) / 0.5 * 16.0).clamp(0.0, 16.0) as u8 };
-        // Narrow screens stack the debug panels, so a width change rebuilds.
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, self.ui.size.x >= 640.0, (held.item, held.data, fade));
+        // Free elements are placed from the window's size; narrow screens stack the debug panels.
+        let size = (self.ui.size.x as i32, self.ui.size.y as i32);
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, size, (held.item, held.data, fade));
         if self.key == Some(key) {
             return false;
         }
         self.key = Some(key);
         let c = content();
-        // Elements per anchor, mod parts plus the hotbar itself, with the player's overrides.
-        // The engine's own elements are placed like the mods': `config/hud.txt` moves them too.
-        let engine = [("core:hotbar", weft_abi::hud_anchor::HOTBAR, Part::Hotbar), ("core:held_name", weft_abi::hud_anchor::ABOVE_HOTBAR, Part::HeldName)];
-        let mut placed: Vec<(String, i32, Part)> = engine
-            .into_iter()
-            .map(|(n, a, p)| (n.to_string(), a.to_string(), 0, p))
-            .chain(c.game.huds.iter().map(|h| (h.name.clone(), h.anchor.clone(), h.order, Part::Mod(h.owner, h.cb))))
-            .map(|(name, anchor, order, part)| {
-                let (anchor, order) = self.layout.get(&name).cloned().unwrap_or((anchor, order));
-                (anchor, order, part)
-            })
-            .collect();
-        placed.sort_by_key(|p| p.1);
+        use weft_abi::hud_anchor as a;
         let mods_debug = mod_debug_groups();
-        let at = |anchor: &str, upwards: bool| -> Vec<Part> {
-            let mut v: Vec<_> = placed.iter().filter(|p| p.0 == anchor).map(|p| p.2).collect();
+        let edit = self.edit.clone();
+        let editing = edit.is_some();
+        // Lines by their state: F3 panels show with F3 and their group on, or in the editor.
+        let lines = debug_lines();
+        let debug_on = edit.as_ref().is_some_and(|e| e.debug);
+        let line_shown = |id: &str, group: Option<usize>| match lines.get(id).copied().unwrap_or_default() {
+            LineState::Always => true,
+            LineState::Never => false,
+            LineState::WithF3 => debug_on || (debug && group.is_none_or(|g| groups & (1 << g) != 0)),
+        };
+        let shown = |part: Part| match part {
+            Part::DebugGroup(i) => DEBUG_GROUPS[i].2.iter().any(|p| p.1.iter().any(|l| line_shown(line_id(l.0), Some(i)))),
+            Part::DebugMod(i) => line_shown(mods_debug[i].3, Some(DEBUG_GROUPS.len() + i)),
+            Part::DebugHelp => line_shown("help", None),
+            _ => true,
+        };
+        // Everything on the overlay, the engine's elements placed like the mods'.
+        let mut all: Vec<(String, String, i32, Part)> = vec![
+            ("core:hotbar".into(), a::HOTBAR.into(), 0, Part::Hotbar),
+            ("core:held_name".into(), a::ABOVE_HOTBAR.into(), 0, Part::HeldName),
+            ("core:crosshair".into(), CENTER.into(), 0, Part::Crosshair),
+            ("core:chat".into(), CHAT.into(), 0, Part::Chat),
+            ("core:debug.help".into(), a::DEBUG_LEFT.into(), i32::MAX, Part::DebugHelp),
+        ];
+        for (i, g) in DEBUG_GROUPS.iter().enumerate() {
+            let side = if g.1 { a::DEBUG_RIGHT } else { a::DEBUG_LEFT };
+            all.push((format!("core:debug.{}", g.0.rsplit('.').next().unwrap_or("")), side.into(), i32::MIN + i as i32, Part::DebugGroup(i)));
+        }
+        for (i, m) in mods_debug.iter().enumerate() {
+            all.push((m.3.to_string(), if m.1 { a::DEBUG_RIGHT } else { a::DEBUG_LEFT }.into(), i32::MIN / 2 + i as i32, Part::DebugMod(i)));
+        }
+        all.extend(c.game.huds.iter().filter(|h| h.anchor != a::DEBUG_LEFT && h.anchor != a::DEBUG_RIGHT).map(|h| (h.name.clone(), h.anchor.clone(), h.order, Part::Mod(h.owner, h.cb))));
+        let mut placed: Vec<Placed> = all
+            .into_iter()
+            .filter(|e| shown(e.3))
+            .map(|(name, anchor, order, part)| {
+                let p = self.layout.get(&name).cloned().unwrap_or_default();
+                let (anchor, order) = p.flow.unwrap_or((anchor, order));
+                Placed { name, anchor, order, part, at: p.at, hidden: p.hidden }
+            })
+            .filter(|e| editing || !e.hidden)
+            .collect();
+        placed.sort_by_key(|p| p.order);
+        self.names = placed.iter().map(|p| p.name.clone()).collect();
+        let at = |anchor: &str, upwards: bool| -> Vec<&Placed> {
+            let mut v: Vec<_> = placed.iter().filter(|p| p.at.is_none() && p.anchor == anchor).collect();
             if upwards {
                 v.reverse();
             }
             v
         };
-        let draw = |ui: &mut Ui, part: Part| match part {
+        let draw = |ui: &mut Ui, part: Part, align: Align| match part {
             Part::Mod(owner, cb) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
             Part::HeldName if fade > 0 => {
                 let id = ui.text(stack_name(lang, Some(input), held), "label");
@@ -96,6 +338,7 @@ impl Hud {
                     t.color = Some(0xFFFFFF00 | (fade as u32 * 255 / 16));
                 }
             }
+            Part::HeldName if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_name"), lang, None), "label")),
             Part::HeldName => {}
             Part::Hotbar if client.mode == crate::world::GameMode::Spectator => {}
             Part::Hotbar => {
@@ -105,8 +348,41 @@ impl Hud {
                     }
                 });
             }
+            Part::Crosshair => drop(ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0))),
+            Part::Chat if chat_visible > 0 => crate::game_screens::chat_lines(ui, client, lang, input, false),
+            Part::Chat if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_chat"), lang, None), "chat")),
+            Part::Chat => {}
+            Part::DebugGroup(i) => debug_group(ui, i, align, &|id| line_shown(id, Some(i))),
+            Part::DebugMod(i) => debug_mod_panel(ui, mods_debug[i].0, mods_debug[i].2, align, &|ui, (o, cb)| modui::build(ui, lang, Some(input), o, cb, Some(client))),
+            Part::DebugHelp => debug_help(ui, groups, align, &mods_debug),
         };
-        use weft_abi::hud_anchor as a;
+        let selected = edit.as_ref().and_then(|e| e.selected.clone());
+        let labels = edit.as_ref().is_some_and(|e| e.labels);
+        // An element's own node, which carries its place: empty ones leave no gap in the flow,
+        // and in the editor have a size to take hold of.
+        let emit = |ui: &mut Ui, e: &Placed, style: Style, align: Align| {
+            let class = editing.then(|| {
+                if selected.as_deref() == Some(e.name.as_str()) { "hud_frame_selected" } else if e.hidden { "hud_frame_hidden" } else { "hud_frame" }.to_string()
+            });
+            let id = ui.open(Kind::Container { class }, style.align(align));
+            draw(ui, e.part, align);
+            if editing && ui.nodes[id].children.is_empty() {
+                ui.nodes[id].style.min = [40.0, 9.0];
+            }
+            if labels {
+                let t = ui.text(element_title(lang, &e.name), "debug");
+                ui.nodes[t].style.at = Some([0.0, -1.0, 0.0, 1.0]);
+                if let Some(t) = ui.text_mut(t) {
+                    t.wrap = false;
+                }
+            }
+            ui.close();
+            ui.set_id(id, &format!("hud:{}", e.name));
+            if !editing {
+                ui.unlink_if_empty(id);
+            }
+        };
+        let window = self.ui.size;
         let ui = &mut self.ui;
         ui.clear();
         ui.root_style(Style::default().stretch());
@@ -116,67 +392,70 @@ impl Hud {
             // Half the screen each, so wide text on one side never pushes the other off screen
             // (the two may overlap on narrow screens, like vanilla's).
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::Start), |ui| {
-                if debug {
-                    debug_groups(ui, groups, false, &mods_debug, &|ui, (o, cb)| draw(ui, Part::Mod(o, cb)));
-                }
-                for p in at(a::TOP_LEFT, false) {
-                    draw(ui, p);
+                for e in at(a::DEBUG_LEFT, false).into_iter().chain(at(a::TOP_LEFT, false)) {
+                    emit(ui, e, Style::default(), Align::Start);
                 }
             });
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::End), |ui| {
-                if debug {
-                    debug_groups(ui, groups, true, &mods_debug, &|ui, (o, cb)| draw(ui, Part::Mod(o, cb)));
-                }
-                for p in at(a::TOP_RIGHT, false) {
-                    draw(ui, p);
+                for e in at(a::DEBUG_RIGHT, false).into_iter().chain(at(a::TOP_RIGHT, false)) {
+                    emit(ui, e, Style::default(), Align::End);
                 }
             });
         });
-        ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0).self_align(Align::Center));
+        for e in at(CENTER, false) {
+            emit(ui, e, Style::default().self_align(Align::Center), Align::Start);
+        }
         ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Stretch).pad(2.0).gap(1.0), |ui| {
-            if chat_visible > 0 {
-                crate::game_screens::chat_lines(ui, client, lang, input, false);
+            for e in at(CHAT, false) {
+                emit(ui, e, Style::default().self_align(Align::Start), Align::Start);
             }
             ui.container(Style::row().align(Align::End), |ui| {
                 ui.container(Style::default().w(0.0).gap(1.0).align(Align::Start), |ui| {
-                    for p in at(a::BOTTOM_LEFT, true) {
-                        draw(ui, p);
+                    for e in at(a::BOTTOM_LEFT, true) {
+                        emit(ui, e, Style::default(), Align::Start);
                     }
                 });
                 ui.container(Style::default().grow(), |_| {});
                 ui.container(Style::default().gap(1.0).align(Align::Center), |ui| {
-                    for p in at(a::ABOVE_HOTBAR, true) {
-                        draw(ui, p);
+                    for e in at(a::ABOVE_HOTBAR, true) {
+                        emit(ui, e, Style::default(), Align::Center);
                     }
                     ui.container(Style::row().w(182.0).gap(2.0).align(Align::End), |ui| {
                         ui.container(Style::default().gap(1.0).align(Align::Start), |ui| {
-                            for p in at(a::HOTBAR_LEFT, true) {
-                                draw(ui, p);
+                            for e in at(a::HOTBAR_LEFT, true) {
+                                emit(ui, e, Style::default(), Align::Start);
                             }
                         });
                         ui.container(Style::default().grow(), |_| {});
                         ui.container(Style::default().gap(1.0).align(Align::End), |ui| {
-                            for p in at(a::HOTBAR_RIGHT, true) {
-                                draw(ui, p);
+                            for e in at(a::HOTBAR_RIGHT, true) {
+                                emit(ui, e, Style::default(), Align::End);
                             }
                         });
                     });
-                    for p in at(a::HOTBAR, true) {
-                        draw(ui, p);
+                    for e in at(a::HOTBAR, true) {
+                        emit(ui, e, Style::default(), Align::Center);
                     }
                 });
                 ui.container(Style::default().grow(), |_| {});
                 ui.container(Style::default().w(0.0).gap(1.0).align(Align::End), |ui| {
-                    for p in at(a::BOTTOM_RIGHT, true) {
-                        draw(ui, p);
+                    for e in at(a::BOTTOM_RIGHT, true) {
+                        emit(ui, e, Style::default(), Align::End);
                     }
                 });
             });
         });
+        for e in placed.iter().filter(|p| p.at.is_some()) {
+            let [ax, ay, x, y] = e.at.unwrap_or_default();
+            emit(ui, e, Style::default().at(ax * window.x + x, ay * window.y + y, [ax, ay]), Align::Start);
+        }
         true
     }
 }
 
+/// The engine's own anchors, which mods have no use for.
+const CENTER: &str = "core:center";
+const CHAT: &str = "core:chat";
 
 type DebugLine = (&'static str, fn(&Ctx) -> Vec<Arg>);
 
@@ -425,12 +704,12 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::I
 
 type ModPart = (weft_abi::ModId, weft_abi::Callback);
 
-/// Mods' F3 panels in group order (after the engine's): title key, right side, part.
-pub fn mod_debug_groups() -> Vec<(&'static str, bool, ModPart)> {
+/// Mods' F3 panels in group order (after the engine's): title key, right side, part, element name.
+pub fn mod_debug_groups() -> Vec<(&'static str, bool, ModPart, &'static str)> {
     use weft_abi::hud_anchor as a;
     let mut v: Vec<_> = content().game.huds.iter().filter(|h| h.anchor == a::DEBUG_LEFT || h.anchor == a::DEBUG_RIGHT).collect();
     v.sort_by_key(|h| h.order);
-    v.into_iter().take(9 - DEBUG_GROUPS.len()).map(|h| (h.title.as_str(), h.anchor == a::DEBUG_RIGHT, (h.owner, h.cb))).collect()
+    v.into_iter().take(9 - DEBUG_GROUPS.len()).map(|h| (h.title.as_str(), h.anchor == a::DEBUG_RIGHT, (h.owner, h.cb), h.name.as_str())).collect()
 }
 
 fn panel_title(ui: &mut Ui, key: String) {
@@ -440,73 +719,71 @@ fn panel_title(ui: &mut Ui, key: String) {
     }
 }
 
-/// The debug overlay groups of one side, each a dark panel with a title; the help panel on the
-/// left lists the F3 combinations.
-fn debug_groups(ui: &mut Ui, groups: u32, right: bool, mods: &[(&'static str, bool, ModPart)], draw: &dyn Fn(&mut Ui, ModPart)) {
-    let align = if right { Align::End } else { Align::Start };
-    for (i, (_, side, panels)) in DEBUG_GROUPS.iter().enumerate() {
-        if *side != right || groups & (1 << i) == 0 {
-            continue;
-        }
-        // Side by side where they fit (GUI scale 3 in Russian does not), else stacked.
-        let style = if ui.size.x >= 640.0 { Style::row().gap(2.0).align(Align::Start) } else { Style::default().gap(2.0).align(align) };
-        ui.container(style, |ui| {
-            for (title, lines) in panels.iter() {
-                ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
-                    ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-                    panel_title(ui, title.to_string());
-                    for (key, f) in lines.iter() {
-                        let key = key.to_string();
-                        let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
-                        if let Some(t) = ui.text_mut(n) {
-                            t.wrap = false;
-                            t.mono = true;
-                        }
+/// A debug overlay group's panels with the lines `shown` says, each panel dark with a title.
+fn debug_group(ui: &mut Ui, i: usize, align: Align, shown: &dyn Fn(&str) -> bool) {
+    let panels = DEBUG_GROUPS[i].2;
+    // Side by side where they fit (GUI scale 3 in Russian does not), else stacked.
+    let style = if ui.size.x >= 640.0 { Style::row().gap(2.0).align(Align::Start) } else { Style::default().gap(2.0).align(align) };
+    ui.container(style, |ui| {
+        for (title, lines) in panels.iter() {
+            if !lines.iter().any(|l| shown(line_id(l.0))) {
+                continue;
+            }
+            ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+                ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+                panel_title(ui, title.to_string());
+                for (key, f) in lines.iter().filter(|l| shown(line_id(l.0))) {
+                    let key = key.to_string();
+                    let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
+                    if let Some(t) = ui.text_mut(n) {
+                        t.wrap = false;
+                        t.mono = true;
                     }
-                });
-            }
-        });
-    }
-    for (i, (name, side, part)) in mods.iter().enumerate() {
-        if *side != right || groups & (1 << (DEBUG_GROUPS.len() + i)) == 0 {
-            continue;
+                }
+            });
         }
-        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
-            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-            panel_title(ui, name.to_string());
-            let first = ui.nodes.len();
-            draw(ui, *part);
-            // The engine's panel style for every line: as wide as it needs, digits in cells.
-            for n in &mut ui.nodes[first..] {
-                if let Kind::Text(t) = &mut n.kind {
-                    t.wrap = false;
-                    t.mono = true;
-                }
+    });
+}
+
+/// A mod's F3 panel.
+fn debug_mod_panel(ui: &mut Ui, title: &str, part: ModPart, align: Align, draw: &dyn Fn(&mut Ui, ModPart)) {
+    ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+        ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+        panel_title(ui, title.to_string());
+        let first = ui.nodes.len();
+        draw(ui, part);
+        // The engine's panel style for every line: as wide as it needs, digits in cells.
+        for n in &mut ui.nodes[first..] {
+            if let Kind::Text(t) = &mut n.kind {
+                t.wrap = false;
+                t.mono = true;
             }
-        });
-    }
-    if !right {
-        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
-            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-            panel_title(ui, "hud.debug.group.help".into());
-            let titles = DEBUG_GROUPS.iter().map(|g| g.0).chain(mods.iter().map(|m| m.0));
-            for (i, title) in titles.enumerate() {
-                let on = groups & (1 << i) != 0;
-                let state = if on { "hud.debug.shown" } else { "hud.debug.hidden" };
-                let n = ui.text_bound(
-                    "debug",
-                    Box::new(move |_: &Ctx| ("hud.debug.toggle".into(), vec![Arg::Int(i as i64 + 1), Arg::Key(title.to_string()), Arg::Key(state.into())])),
-                );
-                if let Some(t) = ui.text_mut(n) {
-                    t.wrap = false;
-                }
+        }
+    });
+}
+
+/// The help panel: the F3 combinations.
+fn debug_help(ui: &mut Ui, groups: u32, align: Align, mods: &[(&'static str, bool, ModPart, &'static str)]) {
+    ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+        ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+        panel_title(ui, "hud.debug.group.help".into());
+        let titles = DEBUG_GROUPS.iter().map(|g| g.0).chain(mods.iter().map(|m| m.0));
+        for (i, title) in titles.enumerate() {
+            let on = groups & (1 << i) != 0;
+            let state = if on { "hud.debug.shown" } else { "hud.debug.hidden" };
+            let n = ui.text_bound(
+                "debug",
+                Box::new(move |_: &Ctx| ("hud.debug.toggle".into(), vec![Arg::Int(i as i64 + 1), Arg::Key(title.to_string()), Arg::Key(state.into())])),
+            );
+            if let Some(t) = ui.text_mut(n) {
+                t.wrap = false;
             }
-            for key in ["hud.debug.gamemode", "hud.debug.cubes", "hud.debug.hitboxes"] {
-                let n = ui.text_bound("debug", Box::new(move |_: &Ctx| (key.into(), vec![])));
-                if let Some(t) = ui.text_mut(n) {
-                    t.wrap = false;
-                }
+        }
+        for key in ["hud.debug.options", "hud.debug.gamemode", "hud.debug.cubes", "hud.debug.hitboxes"] {
+            let n = ui.text_bound("debug", Box::new(move |_: &Ctx| (key.into(), vec![])));
+            if let Some(t) = ui.text_mut(n) {
+                t.wrap = false;
             }
-        });
-    }
+        }
+    });
 }

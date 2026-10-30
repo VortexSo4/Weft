@@ -32,6 +32,8 @@ pub fn all() -> Vec<TestDef> {
         ui::rebind,
         ui::f3,
         ui::pack_drag,
+        ui::hud_editor,
+        ui::debug_lines,
         ui::inventory_crafting,
         ui::creative_inventory,
         ui::chat,

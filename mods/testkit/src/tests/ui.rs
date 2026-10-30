@@ -63,6 +63,109 @@ pub async fn screens(t: T) -> R {
     Ok(())
 }
 
+/// The HUD editor moves, hides and restores anything on the overlay, and the arrangement is kept
+/// in a file (in a test run, beside the player's).
+pub async fn hud_editor(t: T) -> R {
+    let file = format!("{}/test-config/hud.txt", t.c().run_dir());
+    let _ = std::fs::remove_file(&file);
+    t.flat().await?;
+    let rect = |t: &T, name: &str| t.c().ui_rect(&format!("id:hud:{name}"));
+    let before = rect(&t, "core:hotbar").ok_or("no hotbar element")?;
+    t.check(t.c().open_screen(&screens::HUD_EDITOR), "cannot open the HUD editor");
+    t.screen("core:hud_editor").await?;
+    t.frames(4).await?;
+    t.shot("editor").await?;
+    t.laid_out(&["id:hud:core:hotbar", "id:hud:core:crosshair", "id:hud:core:chat", "id:hud:core:held_name", "id:hud:base:health", "id:hud:base:food", "id:hud_tools"]);
+    // A drag takes the hotbar to the top left corner.
+    let [x, y, w, h] = rect(&t, "core:hotbar").ok_or("no hotbar in the editor")?;
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(3).await?;
+    t.c().click(0, 0.4);
+    t.frames(3).await?;
+    t.c().cursor(0.25, 0.2);
+    t.frames(4).await?;
+    t.shot("dragging").await?;
+    t.secs(0.5).await?;
+    let moved = rect(&t, "core:hotbar").ok_or("no hotbar after the drag")?;
+    t.check((moved[0] + moved[2] / 2.0 - 0.25).abs() < 0.02 && (moved[1] + moved[3] / 2.0 - 0.2).abs() < 0.02, format!("the hotbar under the cursor: {moved:?}"));
+    let saved = std::fs::read_to_string(&file).unwrap_or_default();
+    t.check(saved.contains("core:hotbar = at"), format!("saved: {saved:?}"));
+    // The right button hides what is under it.
+    let [x, y, w, h] = rect(&t, "core:crosshair").ok_or("no crosshair")?;
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(3).await?;
+    t.c().click(1, 0.1);
+    t.secs(0.3).await?;
+    let saved = std::fs::read_to_string(&file).unwrap_or_default();
+    t.check(saved.contains("core:crosshair = hidden"), format!("saved: {saved:?}"));
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.frames(3).await?;
+    t.shot("arranged").await?;
+    t.check(rect(&t, "core:crosshair").is_none(), "the crosshair hidden in the game");
+    let kept = rect(&t, "core:hotbar").ok_or("no hotbar in the game")?;
+    t.check((kept[0] - moved[0]).abs() < 0.01, "the hotbar stays where it was put");
+    // Reset all brings back the first picture.
+    t.c().open_screen(&screens::HUD_EDITOR);
+    t.screen("core:hud_editor").await?;
+    t.frames(3).await?;
+    t.check(t.click_ui("text:Reset all", 0), "reset all");
+    t.secs(0.3).await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.frames(3).await?;
+    let back = rect(&t, "core:hotbar").ok_or("no hotbar after the reset")?;
+    t.check((back[0] - before[0]).abs() < 0.001 && (back[1] - before[1]).abs() < 0.001, format!("the hotbar back in place: {back:?} {before:?}"));
+    t.check(rect(&t, "core:crosshair").is_some(), "the crosshair back");
+    Ok(())
+}
+
+/// The debug options (F3+F6) say when each line shows: with F3, always (no F3 needed), never.
+pub async fn debug_lines(t: T) -> R {
+    t.flat().await?;
+    t.debug(false).await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:fps").is_none(), "no frame counter without F3");
+    t.c().key("F3", 0.3);
+    t.frames(3).await?;
+    t.c().key("F6", 0.0);
+    t.screen("core:debug_options").await?;
+    t.frames(3).await?;
+    t.shot("options").await?;
+    t.laid_out(&["id:debug_options", "text:Done"]);
+    // One press: always. Two: never.
+    t.check(t.click_ui("id:line:fps", 0), "the frame counter's row");
+    t.until("set to always", Duration::from_secs(2), |t| t.c().ui_rect("text:Always").is_some()).await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.secs(0.5).await?;
+    t.debug(false).await?;
+    t.frames(4).await?;
+    t.shot("always").await?;
+    t.check(t.c().ui_rect("text:fps").is_some(), "the frame counter without F3 when set to always");
+    t.check(t.c().ui_rect("text:XYZ").is_none(), "and nothing else with it");
+    t.c().open_screen(&screens::DEBUG_OPTIONS);
+    t.screen("core:debug_options").await?;
+    t.frames(3).await?;
+    t.check(t.click_ui("id:line:fps", 0), "the row again");
+    t.until("set to never", Duration::from_secs(2), |t| t.c().ui_rect("text:Never").is_some()).await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.debug(true).await?;
+    t.frames(4).await?;
+    t.check(t.c().ui_rect("text:fps").is_none(), "no frame counter set to never, F3 or not");
+    t.check(t.c().ui_rect("text:XYZ").is_some(), "the other lines stay");
+    t.debug(false).await?;
+    t.c().open_screen(&screens::DEBUG_OPTIONS);
+    t.screen("core:debug_options").await?;
+    t.frames(3).await?;
+    t.click_ui("text:Reset", 0);
+    t.until("reset", Duration::from_secs(2), |t| t.c().ui_rect("text:Never").is_none()).await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    Ok(())
+}
+
 /// Resource packs move by their handles: up and down the list, out of it and back in. Every row
 /// keeps its handle inside the window however many packs are on.
 pub async fn pack_drag(t: T) -> R {

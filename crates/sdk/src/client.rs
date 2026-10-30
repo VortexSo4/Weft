@@ -636,6 +636,8 @@ pub mod screens {
     pub static RESOURCE_PACKS: Screen = Screen::named("core:resource_packs");
     pub static SHADER_PACKS: Screen = Screen::named("core:shader_packs");
     pub static SOUND: Screen = Screen::named("core:sound");
+    pub static HUD_EDITOR: Screen = Screen::named("core:hud_editor");
+    pub static DEBUG_OPTIONS: Screen = Screen::named("core:debug_options");
 }
 
 /// One entity in `Registry::client_entity_tick`.
