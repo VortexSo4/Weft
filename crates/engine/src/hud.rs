@@ -21,7 +21,6 @@ pub const TAG_HOTBAR: u32 = 1;
 enum Part {
     Hotbar,
     HeldName,
-    Fps,
     Mod(weft_abi::ModId, weft_abi::Callback),
 }
 pub const TAG_CROSSHAIR: u32 = 2;
@@ -29,7 +28,7 @@ pub const TAG_CROSSHAIR: u32 = 2;
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool, u32, u8, bool, bool, (u32, u32, u8))>,
+    key: Option<(bool, usize, usize, bool, u32, u8, bool, (u32, u32, u8))>,
     /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
     layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
@@ -60,9 +59,8 @@ impl Hud {
         // The held item's name shows for two seconds after a change, fading for the last half.
         let (held, since) = client.held_name;
         let fade = if held.is_empty() { 0 } else { ((2.0 - since.elapsed().as_secs_f32()) / 0.5 * 16.0).clamp(0.0, 16.0) as u8 };
-        let fps = crate::config::by_name("core:fps_counter").is_some_and(|id| crate::config::get(id) != 0.0);
         // Narrow screens stack the debug panels, so a width change rebuilds.
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, fps, self.ui.size.x >= 640.0, (held.item, held.data, fade));
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, self.ui.size.x >= 640.0, (held.item, held.data, fade));
         if self.key == Some(key) {
             return false;
         }
@@ -70,13 +68,7 @@ impl Hud {
         let c = content();
         // Elements per anchor, mod parts plus the hotbar itself, with the player's overrides.
         // The engine's own elements are placed like the mods': `config/hud.txt` moves them too.
-        let mut engine: Vec<(&str, &str, Part)> = vec![
-            ("core:hotbar", weft_abi::hud_anchor::HOTBAR, Part::Hotbar),
-            ("core:held_name", weft_abi::hud_anchor::ABOVE_HOTBAR, Part::HeldName),
-        ];
-        if fps {
-            engine.push(("core:fps", weft_abi::hud_anchor::TOP_LEFT, Part::Fps));
-        }
+        let engine = [("core:hotbar", weft_abi::hud_anchor::HOTBAR, Part::Hotbar), ("core:held_name", weft_abi::hud_anchor::ABOVE_HOTBAR, Part::HeldName)];
         let mut placed: Vec<(String, i32, Part)> = engine
             .into_iter()
             .map(|(n, a, p)| (n.to_string(), a.to_string(), 0, p))
@@ -105,13 +97,6 @@ impl Hud {
                 }
             }
             Part::HeldName => {}
-            Part::Fps => {
-                let n = ui.text_bound("debug", Box::new(|c: &Ctx| ("hud.fps".into(), vec![Arg::Int(c.stats.fps.round() as i64)])));
-                if let Some(t) = ui.text_mut(n) {
-                    t.wrap = false;
-                    t.mono = true;
-                }
-            }
             Part::Hotbar if client.mode == crate::world::GameMode::Spectator => {}
             Part::Hotbar => {
                 ui.container(Style::row().gap(0.0), |ui| {

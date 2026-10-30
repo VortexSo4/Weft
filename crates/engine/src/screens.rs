@@ -508,10 +508,6 @@ impl Screen for SettingsScreen {
                         r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
-                    d.button("settings.fps_counter", &[on_off(s.fps_counter())], 300.0, false, |r| {
-                        r.settings.set("fps_counter", !r.settings.fps_counter() as u8 as f64);
-                        r.handle(vec![Request::Rebuild]);
-                    });
                     d.button("settings.invert_y", &[on_off(s.invert_y())], 300.0, false, |r| {
                         r.settings.set("invert_y", !r.settings.invert_y() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
