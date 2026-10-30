@@ -5099,6 +5099,7 @@ dependencies = [
  "glam 0.34.1",
  "iroh",
  "kira",
+ "libc",
  "libloading 0.9.0",
  "log",
  "lz4_flex",

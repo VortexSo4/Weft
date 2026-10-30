@@ -131,7 +131,20 @@ pub fn memory() -> u64 {
     if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) } != 0 { c.working_set as u64 } else { 0 }
 }
 
-#[cfg(not(windows))]
+/// A `<key> <value> kB` line of a `/proc` file, in bytes (0 where it is missing).
+#[cfg(target_os = "linux")]
+fn proc_kb(path: &str, key: &str) -> u64 {
+    let Ok(src) = std::fs::read_to_string(path) else { return 0 };
+    let kb = src.lines().find_map(|line| line.strip_prefix(key)).and_then(|rest| rest.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    kb * 1024
+}
+
+#[cfg(target_os = "linux")]
+pub fn memory() -> u64 {
+    proc_kb("/proc/self/status", "VmRSS:")
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn memory() -> u64 {
     0
 }
@@ -158,7 +171,12 @@ pub fn total_memory() -> u64 {
     if unsafe { GlobalMemoryStatusEx(&mut s) } != 0 { s.total_phys } else { 0 }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn total_memory() -> u64 {
+    proc_kb("/proc/meminfo", "MemTotal:")
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn total_memory() -> u64 {
     0
 }
