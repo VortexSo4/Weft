@@ -512,6 +512,18 @@ impl Screen for SettingsScreen {
                         r.settings.set("fps_counter", !r.settings.fps_counter() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
+                    d.button("settings.invert_y", &[on_off(s.invert_y())], 300.0, false, |r| {
+                        r.settings.set("invert_y", !r.settings.invert_y() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.toggle_sneak", &[on_off(s.toggle_sneak())], 300.0, false, |r| {
+                        r.settings.set("toggle_sneak", !r.settings.toggle_sneak() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.toggle_sprint", &[on_off(s.toggle_sprint())], 300.0, false, |r| {
+                        r.settings.set("toggle_sprint", !r.settings.toggle_sprint() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
                     let row = abi::UiNode { row: 1, gap: 6.0, justify: abi::ui_justify::CENTER, align: abi::ui_align::CENTER, self_align: abi::ui_align::STRETCH, ..desc::node(abi::ui_kind::CONTAINER) };
                     for [(a, sa), (b, sb)] in [
                         [("settings.language", "core:language"), ("settings.controls", "core:controls")],
