@@ -251,7 +251,9 @@ impl Entities {
     pub fn reset_components(&mut self, c: &Content, id: u64) {
         let Some(kind) = self.get(id).map(|e| &c.game.entities[e.kind as usize]) else { return };
         for &comp in &kind.components {
-            self.comps.insert((id, comp), starting_value(c, kind, comp));
+            if c.game.components[comp as usize].flags & weft_abi::component_flags::KEEP == 0 {
+                self.comps.insert((id, comp), starting_value(c, kind, comp));
+            }
         }
         self.comps.remove(&(id, c.game.modifiers_comp));
     }

@@ -1031,6 +1031,9 @@ pub mod component_flags {
     /// Sent to players with a menu open on the entity (machine progress), when it changes; read
     /// on the client with `ClientView::menu_component`.
     pub const SYNC_MENU: u32 = 8;
+    /// Kept when the player respawns (a bed, advancements, statistics); the others start over
+    /// from their defaults.
+    pub const KEEP: u32 = 16;
 }
 
 /// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
@@ -2419,6 +2422,9 @@ pub mod event {
     pub const ENTITY_DIED: &str = "core:entity_died";
     /// `PlayerEvent`.
     pub const PLAYER_JOINED: &str = "core:player_joined";
+    /// `PlayerEvent`: a dead player came back, at the spawn point with fresh components (but the
+    /// `KEEP` ones), before anyone saw them there; a mod may move them on (a bed).
+    pub const PLAYER_RESPAWNED: &str = "core:player_respawned";
     /// `Pickup`.
     pub const ITEM_PICKED_UP: &str = "core:item_picked_up";
     /// `Hurt`: damage was applied (after armor and every modifier).

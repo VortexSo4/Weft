@@ -397,6 +397,7 @@ impl Server {
                         e.fire = 0;
                         e.hurt_cooldown = 0;
                     }
+                    r.emit_engine(c, abi::event::PLAYER_RESPAWNED, &abi::PlayerEvent { player: entity });
                 }
             }
             ToServer::Chat(text) => {
