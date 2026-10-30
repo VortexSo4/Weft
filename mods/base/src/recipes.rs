@@ -21,6 +21,7 @@ pub fn register(r: &mut Registry) {
     r.shaped(C, "bread", 1, &["www"], &[('w', "#crops/wheat")]);
     r.shaped(C, "stone_bricks", 4, &["##", "##"], &[('#', "#smooth_stone")]);
     r.shaped(C, "wool", 1, &["ss", "ss"], &[('s', "#string")]);
+    r.shaped(C, "bed", 1, &["www", "ppp"], &[('w', "wool"), ('p', "#planks")]);
     r.shaped(C, "bucket", 1, &["i i", " i "], &[('i', "#ingots/iron")]);
     r.shaped(C, "glowstone", 1, &["ttt", "tgt", "ttt"], &[('t', "#torches"), ('g', "#glass")]);
     r.shapeless(C, "#lamps/{m}", 1, &["#glowstone", "#dyes/{m}"], 0);

@@ -326,6 +326,98 @@ pub async fn advancements(t: T) -> R {
     t.no_screen().await?;
     t.cmd("/advancements reset").await?;
     t.until("advancements reset", Duration::from_secs(5), |t| made(t) == 0).await?;
+/// A bed placed by a player takes two blocks, the head away from them. Used by day it sets the
+/// respawn point; at night the player lies down and, everybody asleep, the night is skipped;
+/// dead, the player comes back at the bed. Breaking one half takes the other and drops one bed.
+pub async fn beds(t: T) -> R {
+    use base_api::BED_SPAWN;
+    fn spawn(t: &T) -> Option<[i32; 3]> {
+        t.c().view().component(&BED_SPAWN).filter(|s| s.set != 0).map(|s| s.bed)
+    }
+    fn beds_held(t: &T) -> u32 {
+        (0..36).map(|i| t.c().inventory_slot(i)).filter(|s| s.item == item("base:bed")).map(|s| s.count).sum()
+    }
+    t.world(3).await?;
+    t.op("mode survival").await?;
+    t.op("time 6000").await?;
+    let f = t.feet();
+    t.fill(add(f, [-3, -1, -6]), add(f, [3, -1, 2]), "stone").await?;
+    t.fill(add(f, [-3, 0, -6]), add(f, [3, 4, 2]), "air").await?;
+    t.op("put me 0 bed 1").await?;
+    t.c().select(0);
+    let foot = add(f, [0, 0, -2]);
+    let head = add(foot, [0, 0, -1]);
+    t.look_at(add(foot, [0, -1, 0]));
+    t.frames(2).await?;
+    t.press("core:use");
+    for _ in 0..30 {
+        if t.block(head).await?.starts_with("base:bed") {
+            break;
+        }
+        t.secs(0.1).await?;
+    }
+    t.check(t.block(foot).await?.contains("part=foot"), format!("the foot where it was placed: {}", t.block(foot).await?));
+    t.check(t.block(head).await?.contains("part=head"), format!("the head beyond it: {}", t.block(head).await?));
+
+    // By day only the respawn point.
+    t.look_at(foot);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.until("respawn point set", Duration::from_secs(5), |t| spawn(t) == Some(foot)).await?;
+    t.secs(0.5).await?;
+    t.check(t.c().screen() != "base:sleeping", "no sleeping by day");
+    t.shot("placed").await?;
+
+    // At night the player lies down, and the night is skipped.
+    t.op("time 18000").await?;
+    t.press("core:use");
+    t.screen("base:sleeping").await?;
+    t.secs(2.5).await?;
+    t.shot("sleeping").await?;
+    t.until("morning", Duration::from_secs(15), |t| t.c().screen() != "base:sleeping").await?;
+    let time = t.cmd("/time query").await?;
+    let tick: u64 = time.split(|c: char| !c.is_ascii_digit()).find(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
+    t.check(tick % 24000 < 2000, format!("woke up in the morning: {time}"));
+
+    // Dead, back at the bed (on its foot), the respawn point still set.
+    // The world's spawn is two blocks from the bed: only the bed puts the player on it.
+    t.cmd("/kill").await?;
+    t.screen("core:death").await?;
+    t.c().respawn();
+    t.no_screen().await?;
+    t.secs(1.0).await?;
+    let p = t.state().pos;
+    let off = ((p[0] - (foot[0] as f64 + 0.5)).powi(2) + (p[2] - (foot[2] as f64 + 0.5)).powi(2)).sqrt();
+    t.check(off < 1.5, format!("respawned {off:.1} blocks from the bed"));
+    t.check(spawn(&t) == Some(foot), "the respawn point survives death");
+
+    // Breaking the head takes the foot and drops one bed.
+    t.op(&format!("break {} {} {}", head[0], head[1], head[2])).await?;
+    t.frames(2).await?;
+    t.check_eq(t.block(foot).await?, "core:air".into(), "the foot goes with the head");
+    t.until("the bed picked up", Duration::from_secs(5), |t| beds_held(t) >= 1).await?;
+    t.secs(0.5).await?;
+    t.check_eq(beds_held(&t), 1, "beds dropped");
+
+    // Facing each way, seen from above: the pillow is at the far end from where it faces.
+    for (i, facing) in ["north", "east", "south", "west"].iter().enumerate() {
+        let x = f[0] - 3 + i as i32 * 2;
+        let d = match *facing {
+            "north" => [0, 0, -1],
+            "south" => [0, 0, 1],
+            "east" => [1, 0, 0],
+            _ => [-1, 0, 0],
+        };
+        let foot = [x, f[1], f[2] - 4];
+        t.set(foot, &format!("bed[facing={facing},part=foot]")).await?;
+        t.set([foot[0] - d[0], foot[1], foot[2] - d[2]], &format!("bed[facing={facing},part=head]")).await?;
+    }
+    t.op("mode creative").await?;
+    t.c().fly(true);
+    t.c().teleport([f[0] as f64 + 0.5, f[1] as f64 + 6.0, f[2] as f64 - 3.5]);
+    t.c().look(0.0, -89.0);
+    t.secs(1.0).await?;
+    t.shot("facings").await?;
     Ok(())
 }
 

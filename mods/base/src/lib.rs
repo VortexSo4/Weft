@@ -2,6 +2,7 @@
 //! engine knows about stone, water or zombies.
 
 mod advancements;
+mod beds;
 mod blocks;
 mod items;
 mod machines;
@@ -40,6 +41,7 @@ fn init(r: &mut Registry) {
     mobs::register(r);
     worldgen::register(r);
     advancements::register(r);
+    beds::register(r);
     // Its terrain is described in `worldgen`.
     r.dimension(&OVERWORLD)
         .player_spawn()

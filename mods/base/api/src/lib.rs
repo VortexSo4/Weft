@@ -32,6 +32,13 @@ value! {
 pub static ADVANCEMENTS: Component<Advancements> = Component::named("base:advancements");
 
 value! {
+    /// Where a player respawns: the foot of the bed they last used, when `set` is 1. Kept
+    /// through death.
+    pub struct BedSpawn { pub bed: [i32; 3], pub set: u32 }
+}
+pub static BED_SPAWN: Component<BedSpawn> = Component::named("base:bed_spawn");
+
+value! {
     /// Read by the hunger system; other mods set it on their own food.
     pub struct Food { pub hunger: u32, pub saturation: f32 }
 }
