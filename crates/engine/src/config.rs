@@ -290,7 +290,7 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::number("core:terrain_check", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:client_visibility", ck::INT, 0.0, 0.0, 2.0, 1.0),
         ConfigDef::number("core:fov", ck::FLOAT, 70.0, 30.0, 110.0, 1.0),
-        ConfigDef::number("core:sensitivity", ck::FLOAT, 1.0, 0.2, 3.0, 0.05),
+        ConfigDef::number("core:sensitivity", ck::FLOAT, 1.0, 0.01, 3.0, 0.05),
         ConfigDef::number("core:brightness", ck::FLOAT, 0.5, 0.0, 1.0, 0.0),
         ConfigDef::number("core:debug_groups", ck::INT, u32::MAX as f64, 0.0, u32::MAX as f64, 1.0),
         ConfigDef::text("core:name", &user),
