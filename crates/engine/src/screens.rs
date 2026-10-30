@@ -108,7 +108,7 @@ pub fn named(name: &str) -> Option<Box<dyn Screen>> {
         "core:multiplayer" => Box::new(crate::net::screens::Multiplayer::default()),
         "core:resource_packs" => Box::new(crate::packs::ResourcePacks::default()),
         "core:shader_packs" => Box::new(crate::packs::ShaderPacks),
-        "core:sound" => Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }),
+        "core:sound" => Box::new(ConfigScreen { ns: None }),
         "core:tags" => Box::new(crate::game_screens::TagList::default()),
         "core:mods" => Box::new(ModList::default()),
         "core:profile" => Box::new(Profile::default()),
@@ -216,8 +216,8 @@ impl Screen for ModList {
             });
             ui.container(Style::row().gap(6.0), |ui| {
                 let id = mods.get(sel).map(|m| m.id.clone()).unwrap_or_default();
-                let has_settings = c.game.configs.iter().any(|d| d.name.split_once(':').is_some_and(|x| x.0 == id));
-                let b = button(ui, cx, "mods.settings", &[], 120.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: id.clone(), title: None }))));
+                let has_settings = c.game.configs.iter().any(|d| on_config_screen(d, Some(&id)));
+                let b = button(ui, cx, "mods.settings", &[], 120.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: Some(id.clone()) }))));
                 if let Kind::Button { enabled, .. } = &mut ui.nodes[b].kind {
                     *enabled = has_settings;
                 }
@@ -530,7 +530,7 @@ impl Screen for ModSettings {
 
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let c = crate::content::content();
-        let mut namespaces: Vec<&str> = c.game.configs.iter().filter_map(|d| d.name.split_once(':').map(|x| x.0)).filter(|ns| *ns != "core").collect();
+        let mut namespaces: Vec<&str> = c.game.configs.iter().filter_map(|d| d.name.split_once(':').map(|x| x.0).filter(|ns| on_config_screen(d, Some(ns)))).filter(|ns| *ns != "core").collect();
         namespaces.dedup();
         frame(ui, cx, "settings.mods", |ui| {
             if namespaces.is_empty() {
@@ -539,18 +539,28 @@ impl Screen for ModSettings {
             for ns in namespaces {
                 let name = Arg::Name(text::Name::Mod(ns.to_string()));
                 let ns = ns.to_string();
-                button(ui, cx, "settings.mods.entry", &[name], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: ns.clone(), title: None }))));
+                button(ui, cx, "settings.mods.entry", &[name], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: Some(ns.clone()) }))));
             }
             button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
     }
 }
 
-/// Every setting of one namespace, built from its declarations: toggles, sliders, choices.
+/// Whether a setting shows on the screen of mod `ns`, or with `None` on the Sound screen, where
+/// the volumes of every mod are. Text settings have their own screens (keys, packs, profile).
+fn on_config_screen(d: &crate::config::ConfigDef, ns: Option<&str>) -> bool {
+    let Some((owner, short)) = d.name.split_once(':') else { return false };
+    let volume = short.starts_with("volume_");
+    match ns {
+        None => volume,
+        Some(ns) => owner == ns && !volume && d.kind != weft_abi::config_kind::TEXT,
+    }
+}
+
+/// Settings built from their declarations: toggles, sliders, choices. Those of mod `ns`, or with
+/// `None` the sound volumes.
 pub struct ConfigScreen {
-    pub ns: String,
-    /// Title key; the mod's name when `None`.
-    pub title: Option<String>,
+    pub ns: Option<String>,
 }
 
 impl Screen for ConfigScreen {
@@ -565,15 +575,15 @@ impl Screen for ConfigScreen {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         use weft_abi::config_kind as ck;
         let c = crate::content::content();
-        let ns = self.ns.clone();
-        let title = self.title.clone().unwrap_or_else(|| "settings.mods.title".into());
-        let mod_name = Arg::Name(text::Name::Mod(ns.clone()));
-        frame(ui, cx, &title, |ui| {
-            if self.title.is_none() {
-                label(ui, cx, "settings.mods.of", &[mod_name], "default");
+        let ns = self.ns.as_deref();
+        frame(ui, cx, if ns.is_some() { "settings.mods.title" } else { "settings.sound" }, |ui| {
+            if let Some(ns) = ns {
+                label(ui, cx, "settings.mods.of", &[Arg::Name(text::Name::Mod(ns.to_string()))], "default");
             }
             let list = ui.panel("panel", Style::default().pad(8.0).gap(6.0).stretch().w(320.0).h(0.0).grow().min_h(40.0).scroll(), |ui| {
-                for (id, d) in c.game.configs.iter().enumerate().filter(|(_, d)| d.name.split_once(':').is_some_and(|x| x.0 == ns)) {
+                let mut listed: Vec<_> = c.game.configs.iter().enumerate().filter(|(_, d)| on_config_screen(d, ns)).collect();
+                listed.sort_by_key(|(_, d)| d.name != "core:volume_master");
+                for (id, d) in listed {
                     let id = id as u32;
                     let key = text::lang_key("config", &d.name);
                     let locked = d.synced() && cx.remote;

@@ -297,6 +297,18 @@ pub async fn mod_settings(t: T) -> R {
     HUM.set(before);
     t.c().close_screen();
     t.c().close_screen();
+    // The Sound screen has the volumes and nothing else.
+    t.c().open_screen(&screens::SOUND);
+    t.screen("core:config").await?;
+    t.frames(3).await?;
+    t.shot("sound").await?;
+    t.laid_out(&["text:Master Volume", "text:Blocks", "text:Done"]);
+    let y = |t: &T, q: &str| t.c().ui_rect(q).map_or(0.0, |r| r[1]);
+    t.check(y(&t, "text:Master Volume") < y(&t, "text:Ambient"), "the master volume comes first");
+    for other in ["text:config.core", "text:Field of view", "text:Generator hum"] {
+        t.check(t.c().ui_rect(other).is_none(), format!("{other} on the Sound screen"));
+    }
+    t.c().close_screen();
     Ok(())
 }
 
