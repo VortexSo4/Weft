@@ -312,6 +312,18 @@ pub async fn advancements(t: T) -> R {
     }
     t.c().close_screen();
     t.no_screen().await?;
+    // The pause menu's button, as wide as the engine's own, opens the list too.
+    t.c().open_screen(&screens::PAUSE);
+    t.screen("core:pause").await?;
+    t.frames(3).await?;
+    t.shot("pause").await?;
+    t.check(t.click_ui("text:Advancements", 0), "the pause menu's advancements button");
+    t.screen("base:advancements").await?;
+    // It opened on top of the pause menu, which is back once it closes.
+    t.c().close_screen();
+    t.screen("core:pause").await?;
+    t.c().close_screen();
+    t.no_screen().await?;
     t.cmd("/advancements reset").await?;
     t.until("advancements reset", Duration::from_secs(5), |t| made(t) == 0).await?;
     Ok(())

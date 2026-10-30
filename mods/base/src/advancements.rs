@@ -253,8 +253,10 @@ fn client(r: &mut Registry) {
     r.key(&OPEN, "L").on_press(|c| {
         c.open_screen(&SCREEN);
     });
+    // The pause menu stretches its mods' parts across the screen; sized and centered like its own
+    // buttons (200 wide) instead.
     r.screen_part(&screens::PAUSE, "buttons", 0, |ui| {
-        ui.button("advancements.base.button", S::default(), |c| {
+        ui.button("advancements.base.button", S::col().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
             c.client().open_screen(&SCREEN);
         });
     });
