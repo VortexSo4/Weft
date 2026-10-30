@@ -477,7 +477,20 @@ impl Screen for SettingsScreen {
         let screen = |name: &'static str| move |r: &mut Running| r.handle(vec![Request::Screen(name.into())]);
         desc::build(ui, cx, |d| {
             desc::frame(d, cx.in_game, "settings.title", |d| {
-                let panel = abi::UiNode { class: abi::Str::new("panel"), pad: [8.0; 4], gap: 6.0, align: abi::ui_align::STRETCH, width: 320.0, ..desc::node(abi::ui_kind::PANEL) };
+                // Fills the space between the title and Done, so a short window scrolls the options
+                // instead of cutting off everything below the fold.
+                let panel = abi::UiNode {
+                    class: abi::Str::new("panel"),
+                    pad: [8.0; 4],
+                    gap: 6.0,
+                    align: abi::ui_align::STRETCH,
+                    width: 320.0,
+                    height: 0.0,
+                    grow: 1.0,
+                    min: [0.0, 40.0],
+                    flags: abi::ui_flags::SCROLL,
+                    ..desc::node(abi::ui_kind::PANEL)
+                };
                 d.open(&panel, |d| {
                     d.slider("settings.view_distance", "core:view_distance", 1.0);
                     d.slider("settings.lod_distance", "core:lod_distance", 1.0);
@@ -493,6 +506,18 @@ impl Screen for SettingsScreen {
                     });
                     d.button("settings.vsync", &[on_off(s.vsync())], 300.0, false, |r| {
                         r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.invert_y", &[on_off(s.invert_y())], 300.0, false, |r| {
+                        r.settings.set("invert_y", !r.settings.invert_y() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.toggle_sneak", &[on_off(s.toggle_sneak())], 300.0, false, |r| {
+                        r.settings.set("toggle_sneak", !r.settings.toggle_sneak() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.toggle_sprint", &[on_off(s.toggle_sprint())], 300.0, false, |r| {
+                        r.settings.set("toggle_sprint", !r.settings.toggle_sprint() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
                     let row = abi::UiNode { row: 1, gap: 6.0, justify: abi::ui_justify::CENTER, align: abi::ui_align::CENTER, self_align: abi::ui_align::STRETCH, ..desc::node(abi::ui_kind::CONTAINER) };

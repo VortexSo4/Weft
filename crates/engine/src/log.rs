@@ -301,7 +301,18 @@ fn local_offset() -> i64 {
     -(bias as i64) * 60
 }
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn local_offset() -> i64 {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+        0
+    } else {
+        tm.tm_gmtoff as i64
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn local_offset() -> i64 {
     0
 }
