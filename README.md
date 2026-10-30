@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.90%2B-B7410E?logo=rust&logoColor=white" alt="Rust 1.90+">
   <img src="https://img.shields.io/badge/graphics-Vulkan-A41E22?logo=vulkan&logoColor=white" alt="Vulkan">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2A6CB0" alt="Windows & Linux">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-2A6CB0" alt="Windows, Linux and macOS">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-3B2F7E" alt="MPL-2.0"></a>
 </p>
 
@@ -37,7 +37,7 @@ Weft is a voxel sandbox engine written in Rust. The game itself is a mod, `mods/
 
 ## Download
 
-Get the latest build from [Releases](https://github.com/VortexSo4/Weft/releases), unpack it and run `weft`. You need a GPU with Vulkan. Windows is the main tested platform; Linux is reported to work well too.
+Get the latest build for your system from [Releases](https://github.com/VortexSo4/Weft/releases), unpack it and run `weft`. You need a GPU with Vulkan; on macOS it comes with the game (Apple Silicon, macOS 12 or newer). Windows is the main tested platform; Linux and macOS are reported to work well too. The release notes have the steps for each system.
 
 Weft ships with its own textures. If Minecraft is installed through the official launcher or Prism, Weft builds a resource pack from that copy when it starts. The pack stays on your computer and can be turned off in Settings > Resource Packs.
 

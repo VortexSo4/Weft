@@ -1,4 +1,5 @@
-# Builds a Windows release and publishes it on GitHub.
+# Builds the game for Windows, Linux and macOS and publishes all three on GitHub. Nothing is
+# published unless all of them build.
 #   - push a tag like v0.2.0 (the version in Cargo.toml must match), or
 #   - run it by hand from the Actions tab and give an existing tag (for a release that was tagged
 #     before this workflow existed).
@@ -16,22 +17,26 @@ on:
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  MOLTENVK: v1.4.2
+  MOLTENVK_SHA256: f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
+
 jobs:
-  windows:
-    runs-on: windows-latest
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, platform: windows-x64, exe: weft.exe }
+          # The oldest available, since a Linux build only runs on this glibc or newer.
+          - { os: ubuntu-22.04, platform: linux-x64, exe: weft }
+          - { os: macos-latest, platform: macos-arm64, exe: weft }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - uses: actions/checkout@v4
-        with:
-          path: notes
-          sparse-checkout: .github/release-notes.md
-          ref: ${{ github.sha }}
 
       - name: Tag matches the version
         shell: bash
@@ -41,24 +46,72 @@ jobs:
             echo "tag $TAG does not match version $version in Cargo.toml"
             exit 1
           fi
+          echo "ARCHIVE=Weft-$version-${{ matrix.platform }}" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       # The game and every mod in the workspace; `--dist` then packs the mods.
       - name: Build
         run: cargo build --release --workspace
 
       - name: Make the distribution
-        shell: pwsh
-        run: |
-          target/release/weft.exe --dist dist/Weft
-          if (-not (Test-Path dist/Weft/weft.exe)) { throw "no distribution made" }
-          Compress-Archive -Path dist/Weft -DestinationPath "Weft-$env:TAG-windows-x64.zip"
-
-      - name: Publish
         shell: bash
         run: |
-          gh release create "$TAG" "Weft-$TAG-windows-x64.zip" \
+          target/release/${{ matrix.exe }} --dist dist/Weft
+          test -f dist/Weft/${{ matrix.exe }}
+          test -n "$(ls dist/Weft/run/mods)"
+
+      # Macs have no Vulkan of their own: the game carries the official MoltenVK and its license,
+      # so players need no Vulkan SDK.
+      - name: MoltenVK
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL -o moltenvk.tar "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK/MoltenVK-macos.tar"
+          echo "$MOLTENVK_SHA256  moltenvk.tar" | shasum -a 256 -c -
+          tar xf moltenvk.tar
+          cp MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib dist/Weft/
+          cp MoltenVK/LICENSE dist/Weft/MoltenVK-LICENSE
+
+      - name: Pack (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Weft -DestinationPath "$env:ARCHIVE.zip"
+
+      # A tar keeps the permission to run the game, which a zip made here would lose.
+      - name: Pack (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: tar -czf "$ARCHIVE.tar.gz" -C dist Weft
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: Weft-*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The notes of this commit, whatever the tag being released contains.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes.md
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: archives
+          merge-multiple: true
+
+      - name: Publish
+        run: |
+          gh release create "$TAG" archives/* \
             --verify-tag --title "Weft ${TAG#v}" \
-            --notes-file notes/.github/release-notes.md --generate-notes
+            --notes-file .github/release-notes.md --generate-notes

@@ -81,6 +81,9 @@ run/mods/mymod/
 `weft --pack-mod run/mods/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.\
 The folder has to hold the library that's what gets packed.
 
+The library is built for one system, so that zip only runs on yours, but you write your mod once and just build it three times. Put `mymod.dll`, `libmymod.so` and `libmymod.dylib` in the folder and `--pack-mod` takes them all, then the same zip works everywhere: the game picks the file of its system.\
+`examples/examplemod/.github/workflows/release.yml` builds all three on GitHub and publishes the zip when you push a tag, the top of the file says what to set up.
+
 The mod's id and version come from `Cargo.toml`, and its name from the lang file (`mod.mymod.name`), so `declare_mod!` only lists the mods yours needs.\
 A folder or zip named differently from the crate stops the game at load, since the library inside wouldn't match.
 

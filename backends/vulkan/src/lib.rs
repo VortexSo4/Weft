@@ -176,9 +176,20 @@ fn err<E: std::fmt::Debug>(what: &str) -> impl FnOnce(E) -> Error + '_ {
     move |e| Error(format!("{what}: {e:?}"))
 }
 
-/// The system's Vulkan loader. macOS has none of its own and Homebrew's prefix is not searched,
-/// so there it is also looked for by path, and MoltenVK can stand in for the loader.
+/// The system's Vulkan loader. macOS has none of its own: a release carries MoltenVK beside the
+/// game, which stands in for the loader and goes first, since a loader found without a driver
+/// fails only later. Built from source, the loader is also looked for by path, as Homebrew's
+/// prefix is not searched.
 unsafe fn load_vulkan() -> Result<ash::Entry, Error> {
+    if cfg!(target_os = "macos") {
+        let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("libMoltenVK.dylib")));
+        if let Some(path) = beside.filter(|p| p.is_file()) {
+            match unsafe { ash::Entry::load_from(&path) } {
+                Ok(entry) => return Ok(entry),
+                Err(e) => log::warn!("{}: {e:?}", path.display()),
+            }
+        }
+    }
     let first = match unsafe { ash::Entry::load() } {
         Ok(entry) => return Ok(entry),
         Err(e) => e,

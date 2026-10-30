@@ -1,0 +1,67 @@
+# Builds your mod for Windows, Linux and macOS and publishes one zip that works on all three.
+# You don't need any of those systems yourself: push a tag like v1.0.0 and download the result
+# from your repository's Releases page.
+#
+# It works once this folder is the root of a repository of its own (GitHub only reads
+# `.github/workflows` there), and `weft_sdk` in Cargo.toml points at the game's git repository
+# instead of a path, with the tag of the game version your players run:
+#   weft_sdk = { git = "https://github.com/VortexSo4/Weft", tag = "v26.10.2" }
+# When the game updates, change that tag and push a new one of your own: a mod built for another
+# game version refuses to load.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux: the oldest available, since a library only runs on this glibc or newer.
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+
+      - name: Mod name
+        shell: bash
+        run: echo "MOD=$(grep -m1 '^name' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
+
+      # Only the one this system built exists.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: library-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            target/release/${{ env.MOD }}.dll
+            target/release/lib${{ env.MOD }}.so
+            target/release/lib${{ env.MOD }}.dylib
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: pack
+          merge-multiple: true
+
+      # The zip is named like the mod, which is what the game looks for. Players put it in `run/mods`.
+      - name: Pack and publish
+        run: |
+          mod=$(grep -m1 '^name' Cargo.toml | cut -d'"' -f2)
+          if [ -d assets ]; then cp -r assets pack/; fi
+          (cd pack && zip -r "../$mod.zip" .)
+          gh release create "$GITHUB_REF_NAME" "$mod.zip" --verify-tag --generate-notes
