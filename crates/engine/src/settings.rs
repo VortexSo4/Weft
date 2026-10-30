@@ -66,6 +66,10 @@ impl Settings {
     pub fn debug_groups(&self) -> u32 {
         number("core:debug_groups") as u32
     }
+    /// The always-on FPS counter on the HUD.
+    pub fn fps_counter(&self) -> bool {
+        number("core:fps_counter") != 0.0
+    }
     pub fn name(&self) -> String {
         config::text(id("core:name"))
     }
