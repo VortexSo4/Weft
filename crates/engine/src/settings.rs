@@ -66,6 +66,18 @@ impl Settings {
     pub fn debug_groups(&self) -> u32 {
         number("core:debug_groups") as u32
     }
+    /// Mouse up looks down instead.
+    pub fn invert_y(&self) -> bool {
+        number("core:invert_y") != 0.0
+    }
+    /// The sneak key switches sneaking on and off instead of being held.
+    pub fn toggle_sneak(&self) -> bool {
+        number("core:toggle_sneak") != 0.0
+    }
+    /// The sprint key switches sprinting on and off instead of being held.
+    pub fn toggle_sprint(&self) -> bool {
+        number("core:toggle_sprint") != 0.0
+    }
     pub fn name(&self) -> String {
         config::text(id("core:name"))
     }

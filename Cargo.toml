@@ -29,6 +29,7 @@ log = { version = "0.4", features = ["std"] }
 rayon = "1"
 parking_lot = "0.13"
 crossbeam-channel = "0.5"
+libc = "0.2"
 libloading = "0.9"
 lz4_flex = "0.14"
 png = "0.18"

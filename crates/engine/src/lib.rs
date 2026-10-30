@@ -86,7 +86,8 @@ pub fn lower_priority() {
 const PRIORITY_BELOW_NORMAL: i32 = -1;
 const PRIORITY_ABOVE_NORMAL: i32 = 1;
 
-/// The calling thread's scheduling priority (Windows values; elsewhere nothing yet).
+/// The calling thread's scheduling priority (Windows values; Linux maps them onto nice;
+/// elsewhere nothing).
 fn set_priority(_priority: i32) {
     #[cfg(windows)]
     {
@@ -96,6 +97,16 @@ fn set_priority(_priority: i32) {
         }
         unsafe {
             SetThreadPriority(GetCurrentThread(), _priority);
+        }
+    }
+    // Windows: +1 above normal, -1 below. Linux nice: lower is higher, so they flip. Raising
+    // the priority needs a privilege and quietly does nothing without it.
+    #[cfg(target_os = "linux")]
+    {
+        let nice = -_priority.clamp(-1, 1);
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::id_t;
+        unsafe {
+            libc::setpriority(libc::PRIO_PROCESS, tid, nice);
         }
     }
 }
