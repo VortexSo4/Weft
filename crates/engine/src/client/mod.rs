@@ -72,6 +72,8 @@ pub struct LocalPlayer {
     /// Walking speed and jump multipliers from the server (attributes).
     pub speed_mul: f64,
     pub jump_mul: f64,
+    /// Sprinting from a double tap of forward; it lasts while forward is held.
+    pub sprinting: bool,
 }
 
 pub struct ClientEntity {
@@ -273,6 +275,8 @@ pub struct Client {
     pub mode: GameMode,
     /// When jump was last pressed, for double-tap flight toggling.
     last_jump: Option<Instant>,
+    /// When forward was last pressed, for double-tap sprinting.
+    last_forward: Option<Instant>,
     /// 0 first person, 1 third person from behind, 2 from the front.
     pub view: u8,
     /// F1: no hand and no block outline.
@@ -431,6 +435,7 @@ impl Client {
                 in_liquid: false,
                 speed_mul: 1.0,
                 jump_mul: 1.0,
+                sprinting: false,
             },
             joined: false,
             player_id: 0,
@@ -488,6 +493,7 @@ impl Client {
             held_name: (ItemStack::EMPTY, Instant::now()),
             mode: GameMode::Survival,
             last_jump: None,
+            last_forward: None,
             view: 0,
             hide_gui: false,
             hand_swing: None,
@@ -894,6 +900,19 @@ impl Client {
                 }
             }
         }
+        // Double tap forward to sprint, like vanilla; the sprint key still works on its own.
+        // Sprinting stops as soon as the player is no longer walking forward.
+        if input.captured {
+            if input.pressed("core:forward") {
+                match self.last_forward.take() {
+                    Some(t) if t.elapsed().as_secs_f32() < 0.35 => self.player.sprinting = true,
+                    _ => self.last_forward = Some(Instant::now()),
+                }
+            }
+            if !input.held("core:forward") || input.held("core:back") || input.held("core:sneak") {
+                self.player.sprinting = false;
+            }
+        }
         let old = self.selected;
         let spectator = self.mode == GameMode::Spectator;
         // In a screen the number keys belong to it (swapping slots with the hotbar).
@@ -924,7 +943,8 @@ impl Client {
         let eye_target = self.player.dims().2;
         self.player.eye += (eye_target - self.player.eye) * k;
         let moving = input.held("core:forward");
-        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
+        let sprinting = input.held("core:sprint") || self.player.sprinting;
+        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if sprinting && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
         if input.pressed("core:perspective") && input.captured {
             self.view = (self.view + 1) % 3;
@@ -1734,7 +1754,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     let sneak = input.held("core:sneak");
     let jump = input.held("core:jump");
     // Sprinting needs forward movement and stops when walking backwards or sneaking.
-    let sprint = input.held("core:sprint") && fwd_in > 0.0 && !sneak;
+    let sprint = (input.held("core:sprint") || p.sprinting) && fwd_in > 0.0 && !sneak;
     if sneak && !p.flying {
         fwd_in *= 0.3;
         side_in *= 0.3;
