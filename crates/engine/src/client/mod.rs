@@ -6,6 +6,7 @@ pub mod mesher;
 pub mod models;
 pub mod modui;
 pub mod particles;
+pub mod sky;
 pub mod terrain;
 pub mod terrain_gpu;
 pub mod lod;
@@ -314,6 +315,10 @@ pub struct Client {
     /// Seconds left of the red screen flash after taking damage.
     pub hurt_flash: f32,
     pub particles: particles::Particles,
+    pub sky: sky::SkyRenderer,
+    /// How overcast the sky is, 0 clear .. 1 a storm, as a mod sets it (`client_op::OVERCAST`):
+    /// the sky and the fog gray and darken, and the daylight on the world with them.
+    pub overcast: f32,
     /// Scratch: taken items and where they fly to this frame.
     pulls: Vec<(u64, DVec3)>,
     /// Scratch: solid bodies and where they are drawn this frame.
@@ -408,6 +413,7 @@ impl Client {
         let render = WorldRenderer::new(gpu, c, textures, assets)?;
         let entity_render = EntityRenderer::new(gpu, assets)?;
         let particles = particles::Particles::new(gpu, assets);
+        let sky = sky::SkyRenderer::new(gpu, assets);
         conn.send(ToServer::Join { name: name.to_string(), key: key.to_string() });
         conn.send(ToServer::View(view_radius as u32));
         if let Some(png) = skin {
@@ -485,6 +491,8 @@ impl Client {
             max_health: 20.0,
             hurt_flash: 0.0,
             particles,
+            sky,
+            overcast: 0.0,
             pulls: Vec::new(),
             frames: Vec::new(),
             self_look: None,
@@ -1656,6 +1664,7 @@ impl Client {
         self.render.destroy(gpu);
         self.entity_render.destroy(gpu);
         self.particles.destroy(gpu);
+        self.sky.destroy(gpu);
         self.gpu_terrain.destroy(gpu);
     }
 
@@ -1664,11 +1673,34 @@ impl Client {
         content().dims[self.world.dim as usize].daylight(self.world.time)
     }
 
-    /// Fog color (linear), dimmed towards night.
+    /// Fog color (linear), dimmed towards night and grayed by the weather.
     fn fog_linear(&self) -> Vec3 {
-        let c = content().dims[self.world.dim as usize].fog_color;
-        let dim = (self.daylight().powi(2)).max(0.02);
-        (Vec3::new(((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32) / 255.0).powf(2.2) * dim
+        self.sky_linear(content().dims[self.world.dim as usize].fog_color)
+    }
+
+    /// A dimension's sky or fog color (0xRRGGBB) as it shows now, linear: an overcast sky
+    /// loses most of its color and some of its light, the night most of it.
+    fn sky_linear(&self, c: u32) -> Vec3 {
+        let night = (self.daylight().powi(2)).max(0.02);
+        let c = (Vec3::new(((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32) / 255.0).powf(2.2);
+        let gray = Vec3::splat(c.dot(Vec3::new(0.2126, 0.7152, 0.0722)));
+        c.lerp(gray, 0.8 * self.overcast) * (1.0 - 0.55 * self.overcast) * night
+    }
+
+    /// The sky behind the world this frame (`gpu_layout::Sky`).
+    fn sky(&self, cam: &Camera, frame: &FrameInfo) -> crate::gpu_layout::Sky {
+        let d = &content().dims[self.world.dim as usize];
+        let aspect = frame.width as f32 / frame.height.max(1) as f32;
+        // Only the turn of the view: the walking sway also moves the camera a little, and the
+        // sky is infinitely far, so moving must not change it.
+        let mut view = cam.view();
+        view.w_axis = glam::Vec4::W;
+        crate::gpu_layout::Sky {
+            inv_view_proj: (cam.proj(aspect) * view).inverse().to_cols_array_2d(),
+            zenith: self.sky_linear(d.sky_color).extend(1.0).to_array(),
+            horizon: self.fog_color(),
+            params: [self.daylight(), self.overcast, crate::shaders::time(), if d.sky_light { 1.0 } else { 0.0 }],
+        }
     }
 
     /// The frame as every world pass sees it (`gpu_layout::Scene`).
@@ -1687,7 +1719,8 @@ impl Client {
             right: inv.transform_vector3(Vec3::X).extend(0.0).to_array(),
             up: inv.transform_vector3(Vec3::Y).extend(0.0).to_array(),
             fog_color: self.fog_color(),
-            params: [view_distance * 0.6, view_distance, self.daylight(), crate::shaders::time()],
+            // Clouds take some of the daylight off the world.
+            params: [view_distance * 0.6, view_distance, self.daylight() * (1.0 - 0.3 * self.overcast), crate::shaders::time()],
             light: [content().dims[self.world.dim as usize].ambient as f32 / 15.0, self.brightness, ticks, 0.0],
             sun: self.sun(),
         }
@@ -1718,6 +1751,8 @@ impl Client {
         }
         let scene_buf = self.scene_bufs[frame.slot];
         gpu.mapped(scene_buf)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&scene));
+        let sky = self.sky(&cam, frame);
+        self.sky.draw(gpu, list, frame, &sky, scene_buf);
         // Opaque blocks, then entities and cutout particles, then what is seen through:
         // translucent blocks, cracks and gizmo fills, blended particles, and the hand.
         let frames: Vec<(u64, DVec3)> = self.entities.iter().filter(|(_, e)| e.structure.is_some()).map(|(&id, e)| (id, crate::server::structure_origin(e.pos))).collect();

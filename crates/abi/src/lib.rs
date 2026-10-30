@@ -2824,6 +2824,9 @@ pub mod client_op {
     /// Runs command `text` (`/tp ~ ~5 ~`) as the player, here if it is a client command, else
     /// on the server; returns an id for `Host::client_command_reply`. The chat stays out of it.
     pub const RUN_COMMAND: u32 = 16;
+    /// How overcast the sky is, `num` 0 clear .. 1 a storm: the sky, the fog and the daylight on
+    /// the world gray and darken, and clouds cover the sky. Stays until changed.
+    pub const OVERCAST: u32 = 17;
 }
 
 /// `Host::client_text` sources.

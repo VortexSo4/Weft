@@ -1,7 +1,7 @@
 //! Player-chosen client packs. Resource packs (`resourcepacks/<id>/`) are laid out like mod assets
 //! per namespace (`<ns>/textures/...`, `<ns>/lang/...`, `.ctm`, GUI textures) and stack in the order the
 //! player picks. A shader pack (`shaderpacks/<id>/`) replaces engine shaders file by file
-//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`, `ui.wgsl`) and has
+//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`, `sky.wgsl`, `ui.wgsl`) and has
 //! to keep their entry points (structs and bindings come from the prelude); a file that fails to
 //! compile falls back to the engine's own, an asset under `core:shaders/`.
 //! Snippets mods ship (`shaders/<kind>/`, see `shaders.rs`) are assets, overridden by resource
@@ -297,7 +297,7 @@ impl Screen for ShaderPacks {
                     }
                 }
             });
-            label(ui, cx, "packs.shaders_note", &[Arg::Text("world.wgsl, entity.wgsl, model.wgsl, particle.wgsl, post.wgsl".into())], "dim");
+            label(ui, cx, "packs.shaders_note", &[Arg::Text("world.wgsl, entity.wgsl, model.wgsl, particle.wgsl, post.wgsl, sky.wgsl".into())], "dim");
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
                 button(ui, cx, "menu.done", &[], 140.0, |c| c.requests.push(Request::Close));

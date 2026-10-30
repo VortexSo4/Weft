@@ -190,6 +190,13 @@ impl Client {
         self.command(abi::client_op::RESPAWN, "", 0.0);
     }
 
+    /// How overcast the sky is, 0 clear .. 1 a storm (weather): the sky, the fog and the
+    /// daylight on the world gray and darken, and clouds cover the sky. It stays until changed,
+    /// so a mod fades it by setting it every frame.
+    pub fn overcast(&self, amount: f32) {
+        self.command(abi::client_op::OVERCAST, "", amount as f64);
+    }
+
     fn text(&self, which: u32, index: u32) -> String {
         unsafe { (host().client_text)(self.raw, which, index).as_str().to_string() }
     }

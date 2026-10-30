@@ -385,7 +385,7 @@ gpu_struct! {
         /// wraps every 2^20).
         pub light: [f32; 4],
         /// xyz toward the sun (unit), w how far it is above the horizon (0 under it or in a
-        /// dimension without sky light). For shader packs: the engine draws no sun.
+        /// dimension without sky light). The sun `sky.wgsl` draws stands here.
         pub sun: [f32; 4],
     }
 }
@@ -530,6 +530,21 @@ gpu_struct! {
 }
 
 gpu_struct! {
+    /// The sky behind the world (`sky.wgsl`).
+    pub struct Sky as "Sky" {
+        /// Clip space to a direction from the camera (the view without its position).
+        pub inv_view_proj: [[f32; 4]; 4],
+        /// Linear colors overhead and at the horizon, where it is the fog's, so distant terrain
+        /// meets it; both already dimmed by the night and grayed by the weather.
+        pub zenith: [f32; 4],
+        pub horizon: [f32; 4],
+        /// x daylight 0..1, y how overcast 0..1, z seconds (clouds drift), w 1 for a dimension
+        /// with sky light (sun, moon, stars and clouds), 0 for one without.
+        pub params: [f32; 4],
+    }
+}
+
+gpu_struct! {
     /// One screen effect pass (`post.wgsl`).
     pub struct Pass as "Pass" {
         /// Bindless index of the image to read, the effect's slot, its strength and the time.
@@ -621,6 +636,10 @@ bindings! {
     post "post.wgsl" {
         PASSES "passes": "array<Pass>",
     }
+    sky "sky.wgsl" {
+        SKY "sky": "Sky",
+        SCENE "scene": "Scene",
+    }
 }
 
 /// Whether the block at `p` (block coordinates) casts a shadow, as far as the client has it
@@ -644,7 +663,7 @@ fn solid_at(p: vec3<i32>) -> bool {
 
 /// Every GPU struct as WGSL.
 fn structs() -> String {
-    [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
+    [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl(), Sky::wgsl()].concat()
 }
 
 /// What goes in front of an engine shader (or a pack's replacement of it): the constants, every
@@ -733,6 +752,7 @@ mod tests {
             ("Quad", size_of::<Quad>()),
             ("Screen", size_of::<Screen>()),
             ("Pass", size_of::<Pass>()),
+            ("Sky", size_of::<Sky>()),
         ];
         for (name, rust) in sizes {
             let (h, _) = module.types.iter().find(|(_, t)| t.name.as_deref() == Some(name)).expect(name);
