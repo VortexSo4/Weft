@@ -1706,6 +1706,8 @@ pub struct Host {
     pub client_command_reply: unsafe extern "C" fn(client: *mut ClientCtx, id: u32, out: *mut Str) -> u32,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
     pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    /// 1 if the cube holding `pos` is here and has been drawn.
+    pub client_cube_shown: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
     /// Light the client has at `pos` (sky level in the low byte, then block red, green, blue),
     /// `u32::MAX` if that cube is not loaded there.
     pub client_light: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,

@@ -222,6 +222,11 @@ impl Client {
         (b != u32::MAX).then_some(b)
     }
 
+    /// Whether the cube holding `pos` is here and has been drawn.
+    pub fn cube_shown(&self, pos: [i32; 3]) -> bool {
+        unsafe { (host().client_cube_shown)(self.raw, &pos) != 0 }
+    }
+
     /// The light the client has at `pos` (sky level in the low byte, then block red, green,
     /// blue), `None` while that cube is not loaded.
     pub fn light(&self, pos: [i32; 3]) -> Option<u32> {

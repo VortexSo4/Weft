@@ -684,7 +684,7 @@ impl Client {
                         }
                         let s = e.structure.as_mut().unwrap();
                         for (pos, cube) in cubes {
-                            s.insert(pos, cube, 0);
+                            s.insert(pos, cube, Default::default());
                         }
                         s.scan_bounds();
                     }
@@ -840,7 +840,7 @@ impl Client {
             let mut items = batch.out.into_iter();
             while let Some(o) = items.next() {
                 match o {
-                    terrain::Out::Cube { pos, cube, hidden } => self.world.insert(pos, cube, hidden),
+                    terrain::Out::Cube { pos, cube, around } => self.world.insert(pos, cube, around),
                     terrain::Out::Blocks(changes) => {
                         for (p, s) in changes {
                             self.world.set_block(p, s);

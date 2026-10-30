@@ -519,11 +519,9 @@ pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
     }
     // Flat arrays per property and per channel: the flood reads them for every step, and a
     // generic cube map (hash lookups, palette decoding) cost several times the flood itself.
-    let mut states = [0u32; 4096];
-    cube.decode(&mut states);
-    let pi = |s: u32| palette.iter().position(|&p| p == s).unwrap();
     let props: Vec<Tight> = palette.iter().map(|&s| t[s as usize]).collect();
-    let idx: Box<[u8; 4096]> = Box::new(std::array::from_fn(|i| if palette.len() == 1 { 0 } else { pi(states[i]) as u8 }));
+    let mut idx: Box<[u8; 4096]> = Box::new([0; 4096]);
+    cube.palette_indices(&mut idx);
     let mut light = [[0u8; 4096]; 4];
     let mut queue: Vec<(u16, u8)> = Vec::new();
     let flood = |light: &mut [u8; 4096], queue: &mut Vec<(u16, u8)>, absorb: &dyn Fn(usize) -> u8, sky: bool| {

@@ -159,20 +159,19 @@ pub fn finish_generated(c: &Content, dim: u32, seed: u64, pos: IVec3, mut blocks
             host::invoke(owner, cb, &mut args);
         }
     }
+    // One look over the blocks for what is asked of them below: most cubes are all one thing.
     let max = c.states.len() as u32;
-    let mut bad = 0;
-    for b in blocks.iter_mut() {
-        if *b >= max {
-            bad = *b;
+    let (top, varied) = blocks.iter().fold((0, 0), |(top, varied), &b| (top.max(b), varied | (b ^ blocks[0])));
+    if top >= max {
+        for b in blocks.iter_mut().filter(|b| **b >= max) {
             *b = AIR;
         }
+        host::misuse("generator", || format!("{} wrote state {top}, which does not exist (air instead)", def.name));
     }
-    if bad != 0 {
-        host::misuse("generator", || format!("{} wrote state {bad}, which does not exist (air instead)", def.name));
-    }
-    place_ores(c, def, seed, pos, &mut blocks, &biomes);
-    place_structures(c, def, seed, pos, &mut blocks);
-    let mut cube = Cube::from_states(blocks.as_slice().try_into().unwrap());
+    let uniform = varied == 0 && top < max;
+    let ores = place_ores(c, def, seed, pos, &mut blocks, &biomes, uniform);
+    let built = place_structures(c, def, seed, pos, &mut blocks);
+    let mut cube = if uniform && !ores && !built { Cube::uniform(blocks[0], 0) } else { Cube::from_states(blocks.as_slice().try_into().unwrap()) };
     if biomes.iter().any(|&b| b != 0) {
         cube.biomes = Some(Box::new(biomes));
     }
@@ -183,15 +182,30 @@ use weft_noise::hash;
 
 /// Veins start in this and the 26 neighboring cubes and wander a block per step, so the result
 /// does not depend on which cube is generated first.
-fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256]) {
+/// Returns whether any went in. `uniform`: the cube is all one state.
+fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256], uniform: bool) -> bool {
     let o = pos * 16;
-    let air = c.states[AIR as usize].block;
-    if blocks.iter().all(|&b| b == AIR) && def.ores.iter().all(|ore| ore.replace.binary_search(&air).is_err()) {
-        return;
+    let mut placed = false;
+    // The states in the cube: a vein has nothing to do where it could replace none of them
+    // (air and water, the most of what is generated), and a look costs far less than its veins.
+    let mut present: Vec<u32> = vec![blocks[0]];
+    if !uniform {
+        let mut last = blocks[0];
+        for &b in blocks.iter() {
+            if b != last {
+                last = b;
+                if !present.contains(&b) {
+                    present.push(b);
+                }
+            }
+        }
     }
     for ore in &def.ores {
         let reach = ore.size as i32;
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
+            continue;
+        }
+        if !present.iter().any(|&s| ore.replace.binary_search(&c.states[s as usize].block).is_ok()) {
             continue;
         }
         for nz in pos.z - 1..=pos.z + 1 {
@@ -214,6 +228,7 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
                                 let biome_ok = ore.biome.is_none_or(|t| c.components.has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t));
                                 if biome_ok && ore.replace.binary_search(&c.states[blocks[i] as usize].block).is_ok() {
                                     blocks[i] = ore.state;
+                                    placed = true;
                                 }
                             }
                         }
@@ -221,7 +236,11 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
                 }
             }
         }
+        if placed && !present.contains(&ore.state) {
+            present.push(ore.state);
+        }
     }
+    placed
 }
 
 /// Where structure `s` stands in its grid cell (`cell` x, z), if it does there: its lowest
@@ -338,8 +357,10 @@ pub fn scattered_near(def: &crate::content::DimensionDef, c: &Content, seed: u64
 }
 
 /// Structure blocks that fall into this cube.
-fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) {
+/// Returns whether it put anything in.
+fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
     let o = pos * 16;
+    let mut built = false;
     for s in &def.structures {
         let cells = |lo: i32, size: i32| (lo - size).div_euclid(s.spacing)..=(lo + 15).div_euclid(s.spacing);
         for cz in cells(o.z, s.extent.z) {
@@ -352,11 +373,13 @@ fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, 
                     let l = a + off - o;
                     if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                         blocks[(l.y * 256 + l.z * 16 + l.x) as usize] = state;
+                        built = true;
                     }
                 }
             }
         }
     }
+    built
 }
 
 /// Appends a timer: fire time, event name and value, as the `TIMERS` component keeps them.

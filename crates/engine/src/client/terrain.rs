@@ -31,9 +31,18 @@ pub enum In {
     Many(Vec<In>),
 }
 
+/// Cubes around one that are not there and not waited for (`cube::around_mask` bits).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Around {
+    /// Never coming, or hidden: solid ground as far as its faces go.
+    pub hidden: u32,
+    /// Over a column whose ground came first: empty sky for now.
+    pub sky: u32,
+}
+
 pub enum Out {
-    /// `hidden`: the cubes around it never coming (`cube::around_mask` bits).
-    Cube { pos: IVec3, cube: Arc<Cube>, hidden: u32 },
+    /// `around`: which cubes around it not to wait for.
+    Cube { pos: IVec3, cube: Arc<Cube>, around: Around },
     Blocks(Vec<(IVec3, u32)>),
     Unload(IVec3),
     /// The view now spans cubes `lo..=hi` up and down.
@@ -92,6 +101,31 @@ fn visibility_on(gpu: bool) -> bool {
 
 /// Batches the client may have waiting before no more terrain is asked for.
 const BACKLOG: usize = 8;
+
+/// What is asked first of a column seen from above: its ground and this many cubes either way
+/// (trees above, the sides of what is not flat under). The rest of a column is empty sky or
+/// hidden underground, more than nine cubes in ten of it at the longest view, and comes once
+/// the ground of every column in view has.
+const BAND: i32 = 2;
+
+/// Cubes queued at most for the rest of the columns while the player moves, so that the ground
+/// of columns coming into view never waits long behind them.
+const REST_BACKLOG: usize = 8192;
+
+/// Columns this close (in cubes) to a player near the ground come whole at once.
+const WHOLE_NEAR: i32 = 12;
+
+/// The cube heights of column (`col` in cubes) where its ground lies, `BAND` around it.
+fn band_of(def: &crate::content::DimensionDef, seed: u64, col: IVec2) -> Option<(i32, i32)> {
+    def.terrain.as_ref()?;
+    let (x, z) = (col.x * 16, col.y * 16);
+    let (mut lo, mut hi) = (i32::MAX, def.sea_level().unwrap_or(i32::MIN));
+    for (dx, dz) in [(8, 8), (0, 0), (15, 0), (0, 15), (15, 15)] {
+        let h = def.column(seed, x + dx, z + dz)?.height;
+        (lo, hi) = (lo.min(h), hi.max(h));
+    }
+    Some(((lo >> 4) - BAND, (hi >> 4) + BAND))
+}
 
 /// Threads for lighting what arrived: the background pool's queue is long with generation and
 /// meshing while loading, and the terrain thread waits for this. Below normal priority like the
@@ -171,7 +205,8 @@ fn light_run(c: &Content, def: &crate::content::DimensionDef, cubes: &FxHashMap<
     let top = run[0].0;
     let mut map = Run { cubes, own: Vec::with_capacity((top.y - run[run.len() - 1].0.y + 1) as usize), top };
     for (pos, mut cube, lit) in run {
-        let open_above = light::open_above(def, pos.y) || pos.y >= hi;
+        // Nothing above and none coming: sky, the top of a column's ground asked before the rest.
+        let open_above = light::open_above(def, pos.y) || pos.y >= hi || map.cube(pos + IVec3::Y).is_none();
         let sky = if def.sky_light { light::sky_below(map.cube(pos + IVec3::Y), open_above) } else { SkyBelow::Full };
         let prelit = lit && sky != SkyBelow::Partial;
         if prelit && sky == SkyBelow::Dark {
@@ -222,6 +257,13 @@ struct Terrain {
     cursor: usize,
     /// Columns with every cube loaded, asked for or saved, for the current `lo..=hi`.
     done: FxHashSet<IVec2>,
+    /// Where the ground of columns lies (`band_of`), and the columns whose ground was asked for.
+    bands: FxHashMap<IVec2, (i32, i32)>,
+    ground_done: FxHashSet<IVec2>,
+    /// How far the scan for the rest of the columns got, after `cursor` for their ground.
+    rest_cursor: usize,
+    /// When the view last moved.
+    moved: std::time::Instant,
     generating: FxHashSet<IVec3>,
     /// Generated, waiting for the cube above (sky light comes from it); whether its light from
     /// the worker still holds (an edit that came meanwhile changed its blocks).
@@ -269,6 +311,10 @@ impl Terrain {
             offsets: Vec::new(),
             cursor: 0,
             done: FxHashSet::default(),
+            bands: FxHashMap::default(),
+            ground_done: FxHashSet::default(),
+            rest_cursor: 0,
+            moved: std::time::Instant::now(),
             generating: FxHashSet::default(),
             waiting: FxHashMap::default(),
             gen_tx,
@@ -321,7 +367,7 @@ impl Terrain {
                 return;
             }
             crate::diag::TERRAIN_BUSY_NS.add(busy.elapsed().as_nanos() as u64);
-            let scanning = if self.vis_on { !self.wanted.is_empty() } else { self.cursor < self.offsets.len() };
+            let scanning = if self.vis_on { !self.wanted.is_empty() } else { self.rest_cursor < self.offsets.len() };
             let left = self.generating.len() + self.waiting.len() + scanning as usize;
             self.pending.store(left as u64, Ordering::Relaxed);
         }
@@ -419,15 +465,33 @@ impl Terrain {
         let air = (1..=View::air_probe(radius)).take_while(|&d| self.cubes.get(&(center - IVec3::Y * d)).is_some_and(|c| c.uniform_state() == Some(crate::content::AIR))).count() as i32;
         let view = View::around(center, radius, air);
         let (lo, hi) = view.loaded_y(def);
+        let range_moved = (lo, hi) != (self.lo, self.hi) || radius != self.view.radius;
         if (lo, hi) != (self.lo, self.hi) {
             self.done.clear();
+            self.ground_done.clear();
             self.out.push(Out::Range { lo, hi });
         }
+        let was = self.view.grown(2);
         (self.view, self.lo, self.hi) = (view, lo, hi);
         self.cursor = 0;
-        // What left the view goes (a cube more around it, against flicker at the edge).
+        self.rest_cursor = 0;
+        self.moved = std::time::Instant::now();
+        // What left the view goes (a cube more around it, against flicker at the edge). A step
+        // sideways only loses columns on the side left behind: a look at the columns that were
+        // kept, not at every cube, which is more than a million at the longest view.
         let keep = view.grown(2);
-        let gone: Vec<IVec3> = self.cubes.keys().copied().filter(|&p| !keep.column(p) || p.y < lo - 2 || p.y > hi + 2).collect();
+        let gone: Vec<IVec3> = if range_moved {
+            self.cubes.keys().copied().filter(|&p| !keep.column(p) || p.y < lo - 2 || p.y > hi + 2).collect()
+        } else {
+            let r = was.radius;
+            let cubes = &self.cubes;
+            (-r..=r)
+                .flat_map(|z| (-r..=r).map(move |x| IVec3::new(was.center.x + x, 0, was.center.z + z)))
+                .filter(|&c| was.column(c) && !keep.column(c))
+                .flat_map(|c| (lo - 2..=hi + 2).map(move |y| IVec3::new(c.x, y, c.z)))
+                .filter(|p| cubes.contains_key(p))
+                .collect()
+        };
         for p in gone {
             self.cubes.remove(&p);
             self.server.remove(&p);
@@ -437,8 +501,16 @@ impl Terrain {
             }
         }
         self.saved.retain(|&p| keep.column(p));
-        self.done.retain(|col| (*col - IVec2::new(center.x, center.z)).length_squared() <= radius * radius);
-        self.emit_held();
+        let near = |col: &IVec2| (*col - IVec2::new(center.x, center.z)).length_squared() <= radius * radius;
+        self.done.retain(near);
+        self.ground_done.retain(near);
+        self.bands.retain(|col, _| near(col));
+        // What a held cube waited for can only have left the view at the edge of it.
+        let inner = (radius - 2).max(0).pow(2);
+        let edge: Vec<IVec3> = self.held.iter().copied().filter(|&p| range_moved || (p - center).with_y(0).length_squared() >= inner).collect();
+        for p in edge {
+            self.emit(p);
+        }
     }
 
     /// Asks for the nearest missing cubes, each column from the top down: what the visibility
@@ -456,32 +528,92 @@ impl Terrain {
             self.request_visible(budget);
             return;
         }
+        // The ground of every column first, nearest first; whole columns near a player down there.
+        let center = IVec2::new(self.view.center.x, self.view.center.z);
         while self.generating.len() + self.waiting.len() < budget && self.cursor < self.offsets.len() {
-            let col = IVec2::new(self.view.center.x, self.view.center.z) + self.offsets[self.cursor];
-            if self.done.contains(&col) {
+            let col = center + self.offsets[self.cursor];
+            if self.done.contains(&col) || self.ground_done.contains(&col) {
                 self.cursor += 1;
                 continue;
             }
-            let mut complete = true;
-            let mut list = Vec::new();
-            for y in (self.lo..=self.hi).rev() {
-                let pos = IVec3::new(col.x, y, col.y);
-                if !self.missing(pos) {
-                    continue;
-                }
-                if self.generating.len() + self.waiting.len() + list.len() >= budget {
-                    complete = false;
-                    break;
-                }
-                list.push(pos);
-            }
-            self.ask_column(list);
-            if !complete {
+            self.find_bands(center);
+            let band = self.bands.get(&col).copied();
+            let (lo, hi) = band.unwrap_or((self.lo, self.hi));
+            let close = (col - center).length_squared() <= WHOLE_NEAR * WHOLE_NEAR && self.view.center.y <= hi + 1;
+            let whole = band.is_none() || close;
+            let (lo, hi) = if whole { (self.lo, self.hi) } else { (lo.max(self.lo), hi.min(self.hi)) };
+            if !self.ask_down(col, lo, hi, budget) {
                 return;
             }
-            self.done.insert(col);
+            if whole {
+                self.done.insert(col);
+            } else {
+                self.ground_done.insert(col);
+            }
             self.cursor += 1;
         }
+        // Then the rest, as long as that keeps nothing waiting.
+        let limit = if self.moved.elapsed() < Duration::from_secs(1) { REST_BACKLOG } else { budget };
+        while self.cursor >= self.offsets.len() && self.rest_cursor < self.offsets.len() {
+            if self.generating.len() + self.waiting.len() >= limit {
+                return;
+            }
+            let col = center + self.offsets[self.rest_cursor];
+            if !self.done.contains(&col) {
+                if !self.ask_down(col, self.lo, self.hi, limit) {
+                    return;
+                }
+                self.done.insert(col);
+            }
+            self.rest_cursor += 1;
+        }
+    }
+
+    /// Works out where the ground lies for the next columns to ask for, on every core, and for
+    /// the columns beside them: a cube looks at those to see what it need not wait for, and
+    /// nothing would make it look again if it found out too late.
+    fn find_bands(&mut self, center: IVec2) {
+        use rayon::prelude::*;
+        if self.bands.contains_key(&(center + self.offsets[self.cursor])) {
+            return;
+        }
+        let c: &'static Content = content();
+        let (def, seed) = (&c.dims[self.dim as usize], self.seed);
+        let radius = self.view.radius;
+        let mut next: FxHashSet<IVec2> = FxHashSet::default();
+        for o in self.offsets[self.cursor..].iter().take(1024) {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let col = center + *o + IVec2::new(dx, dz);
+                    if (col - center).length_squared() <= radius * radius && !self.bands.contains_key(&col) {
+                        next.insert(col);
+                    }
+                }
+            }
+        }
+        let next: Vec<IVec2> = next.into_iter().collect();
+        let found: Vec<(IVec2, Option<(i32, i32)>)> = pool().install(|| next.par_iter().map(|&col| (col, band_of(def, seed, col))).collect());
+        self.bands.extend(found.into_iter().filter_map(|(col, b)| b.map(|b| (col, b))));
+    }
+
+    /// Asks for the missing cubes of a column between two heights, from the top down, up to a
+    /// total of `limit` being made. Returns whether it got to the bottom.
+    fn ask_down(&mut self, col: IVec2, lo: i32, hi: i32, limit: usize) -> bool {
+        let mut complete = true;
+        let mut list = Vec::new();
+        for y in (lo..=hi).rev() {
+            let pos = IVec3::new(col.x, y, col.y);
+            if !self.missing(pos) {
+                continue;
+            }
+            if self.generating.len() + self.waiting.len() + list.len() >= limit {
+                complete = false;
+                break;
+            }
+            list.push(pos);
+        }
+        self.ask_column(list);
+        complete
     }
 
     /// Neither here, nor coming from the server or the workers.
@@ -654,10 +786,10 @@ impl Terrain {
         let mut look: FxHashSet<IVec3> = new.into_iter().chain(around).chain(changed).collect();
         look.retain(|p| self.cubes.contains_key(p));
         let this = &*self;
-        let ready: Vec<(IVec3, Option<u32>)> = pool().install(|| look.par_iter().map(|&p| (p, this.readiness(p))).collect());
+        let ready: Vec<(IVec3, Option<Around>)> = pool().install(|| look.par_iter().map(|&p| (p, this.readiness(p))).collect());
         for (p, r) in ready {
             match r {
-                Some(hidden) => self.hand_over(p, hidden),
+                Some(around) => self.hand_over(p, around),
                 None => {
                     self.held.insert(p);
                 }
@@ -691,37 +823,50 @@ impl Terrain {
             return;
         }
         match self.readiness(pos) {
-            Some(hidden) => self.hand_over(pos, hidden),
+            Some(around) => self.hand_over(pos, around),
             None => {
                 self.held.insert(pos);
             }
         }
     }
 
-    /// The cubes around `pos` never coming (`cube::around_mask` bits), or `None` while one in
-    /// view is still to come and it was not handed over yet.
-    fn readiness(&self, pos: IVec3) -> Option<u32> {
+    /// The cubes around `pos` not to wait for, or `None` while one in view is still to come and
+    /// it was not handed over yet.
+    fn readiness(&self, pos: IVec3) -> Option<Around> {
         let def = &content().dims[self.dim as usize];
-        let mut hidden = 0u32;
+        let mut around = Around::default();
         for i in 0..27u32 {
             let n = pos + IVec3::new(i as i32 % 3 - 1, i as i32 / 9 - 1, i as i32 / 3 % 3 - 1);
             if i == 13 || n.y < def.min_cube_y || n.y > def.max_cube_y || self.cubes.contains_key(&n) {
                 continue;
+            }
+            // Outside the ground of a column not asked for whole yet: above it is sky for now,
+            // and under it nothing to see.
+            let col = IVec2::new(n.x, n.z);
+            if let Some(&(lo, hi)) = self.bands.get(&col).filter(|_| !self.done.contains(&col)) {
+                if n.y > hi {
+                    around.sky |= 1 << i;
+                    continue;
+                }
+                if n.y < lo {
+                    around.hidden |= 1 << i;
+                    continue;
+                }
             }
             if self.in_view(n) && (!self.vis_on || self.vis.seen.contains(&n)) {
                 if self.held.contains(&pos) {
                     return None;
                 }
             } else {
-                hidden |= 1 << i;
+                around.hidden |= 1 << i;
             }
         }
-        Some(hidden)
+        Some(around)
     }
 
-    fn hand_over(&mut self, pos: IVec3, hidden: u32) {
+    fn hand_over(&mut self, pos: IVec3, around: Around) {
         self.held.remove(&pos);
-        self.out.push(Out::Cube { pos, cube: self.cubes[&pos].clone(), hidden });
+        self.out.push(Out::Cube { pos, cube: self.cubes[&pos].clone(), around });
     }
 
     /// A cube just put in: handed over if it can be, and so are held ones around it that
@@ -736,11 +881,4 @@ impl Terrain {
         }
     }
 
-    /// Held cubes that may go now (what they waited for left the view).
-    fn emit_held(&mut self) {
-        let around: Vec<IVec3> = self.held.iter().copied().collect();
-        for p in around {
-            self.emit(p);
-        }
-    }
 }

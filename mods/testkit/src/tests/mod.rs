@@ -133,7 +133,7 @@ pub fn all() -> Vec<TestDef> {
 
 /// Measurements without a verdict worth failing a run over; `--test bench`.
 pub fn bench() -> Vec<TestDef> {
-    crate::tests![world::load_benchmark, world::item_farm, looks::particle_crowd, world::crater]
+    crate::tests![world::fly_load, world::load_benchmark, world::item_farm, looks::particle_crowd, world::crater]
 }
 
 impl T {

@@ -101,6 +101,8 @@ pub mod settings {
     pub static DEBUG_GROUPS: Config<u32> = Config::named("core:debug_groups");
     pub static NAME: TextConfig = TextConfig::named("core:name");
     /// Enabled resource packs, highest priority first, comma separated.
+    /// When each F3 line shows: `fps=always,cube=never`.
+    pub static DEBUG_LINES: TextConfig = TextConfig::named("core:debug_lines");
     pub static RESOURCE_PACKS: TextConfig = TextConfig::named("core:resource_packs");
     pub static SHADER_PACK: TextConfig = TextConfig::named("core:shader_pack");
     pub static VOLUME_MASTER: Config<u32> = Config::named("core:volume_master");
