@@ -34,7 +34,7 @@ fn get_roots_from_home() -> Vec<PathBuf> {
 
 fn get_roots_from_env() -> Option<Vec<PathBuf>> {
     Some(
-        std::env::var_os("MINECRAFT_LOOKUP")?
+        std::env::var_os("MINECRAFT_DIR_LOOKUP")?
             .to_str()?
             .split(':')
             .map(PathBuf::from)
