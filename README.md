@@ -1,10 +1,9 @@
-<h1 align="center">Weft</h1>
+<p align="center"><img src="docs/img/banner.png" alt="Weft"></p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.90%2B-B7410E?logo=rust&logoColor=white" alt="Rust 1.90+">
   <img src="https://img.shields.io/badge/graphics-Vulkan-A41E22?logo=vulkan&logoColor=white" alt="Vulkan">
-  <img src="https://img.shields.io/badge/platform-Windows-2A6CB0" alt="Windows">
-  <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2A6CB0" alt="Windows & Linux">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-3B2F7E" alt="MPL-2.0"></a>
 </p>
 
