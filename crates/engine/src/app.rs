@@ -1603,6 +1603,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
     r.input.sensitivity = r.settings.sensitivity();
+    r.input.invert_y = r.settings.invert_y();
+    r.input.toggle_sneak = r.settings.toggle_sneak();
+    r.input.toggle_sprint = r.settings.toggle_sprint();
     r.input.end_frame();
     let top = (r.screens.len(), r.screens.last().map(|(s, _)| s.name().to_string()).unwrap_or_default());
     if top != r.screen_seen {

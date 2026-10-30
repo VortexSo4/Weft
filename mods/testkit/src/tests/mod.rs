@@ -56,6 +56,7 @@ pub fn all() -> Vec<TestDef> {
         world::gpu_terrain,
         world::distant_terrain,
         gameplay::crafting_table_tags,
+        gameplay::sprint_and_sneak_modes,
         gameplay::mining_and_wear,
         gameplay::creative_and_invulnerable,
         gameplay::creative_clicks,

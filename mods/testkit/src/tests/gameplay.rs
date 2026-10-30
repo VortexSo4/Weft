@@ -11,7 +11,84 @@ fn item(name: &str) -> u32 {
 
 use base_api::HUNGER;
 
-/// Shaped crafting with tag ingredients (`#planks`) at a crafting table.
+pub async fn sprint_and_sneak_modes(t: T) -> R {
+    use weft_sdk::Config;
+    static TOGGLE_SNEAK: Config<bool> = Config::named("core:toggle_sneak");
+    static TOGGLE_SPRINT: Config<bool> = Config::named("core:toggle_sprint");
+    t.flat().await?;
+    // The options are in Controls, and nothing is left of them in the Settings.
+    t.c().open_screen(&screens::SETTINGS);
+    t.screen("core:settings").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:Toggle sneak").is_none(), "input options out of the Settings");
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.c().open_screen(&screens::CONTROLS);
+    t.screen("core:controls").await?;
+    t.frames(3).await?;
+    t.shot("controls").await?;
+    t.laid_out(&["text:Invert mouse Y", "text:Toggle sneak", "text:Toggle sprint"]);
+    t.check(t.click_ui("text:Toggle sneak", 0), "toggle sneak in Controls");
+    t.until("toggle sneak on", Duration::from_secs(2), |_| TOGGLE_SNEAK.get()).await?;
+    TOGGLE_SNEAK.set(false);
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.c().look(0.0, 0.0);
+
+    // Blocks walked in a second of holding forward.
+    let walk = async || -> Result<f64, String> {
+        let a = t.state().pos;
+        t.hold("core:forward", 1.0);
+        t.secs(1.2).await?;
+        Ok(((t.state().pos[0] - a[0]).powi(2) + (t.state().pos[2] - a[2]).powi(2)).sqrt())
+    };
+    let plain = walk().await?;
+    t.note(format!("walking: {plain:.2}"));
+    let fast = |d: f64| d > plain * 1.15;
+
+    // A double tap sprints as long as forward stays down.
+    t.press("core:forward");
+    t.frames(3).await?;
+    let d = walk().await?;
+    t.probe("double tap, against walking", (d / plain) as f32, fast(d));
+    let d = walk().await?;
+    t.probe("after letting go of forward, against walking", (d / plain) as f32, !fast(d));
+
+    // Toggle sprint: the key switches it on and off, also while still held.
+    TOGGLE_SPRINT.set(true);
+    t.frames(2).await?;
+    t.press("core:sprint");
+    t.frames(4).await?;
+    let d = walk().await?;
+    t.probe("toggled sprint, against walking", (d / plain) as f32, fast(d));
+    t.press("core:sprint");
+    t.frames(4).await?;
+    let d = walk().await?;
+    t.probe("toggled off, against walking", (d / plain) as f32, !fast(d));
+    // Held for a stack drop, the same key switches nothing.
+    t.hold("core:sprint", 0.3);
+    t.frames(3).await?;
+    t.press("core:drop");
+    t.secs(0.5).await?;
+    let d = walk().await?;
+    t.probe("after dropping a stack, against walking", (d / plain) as f32, !fast(d));
+    TOGGLE_SPRINT.set(false);
+
+    // Toggle sneak: one press slows the walk until the next.
+    TOGGLE_SNEAK.set(true);
+    t.frames(2).await?;
+    t.press("core:sneak");
+    t.frames(4).await?;
+    let d = walk().await?;
+    t.probe("toggled sneak, against walking", (d / plain) as f32, d < plain * 0.5);
+    t.press("core:sneak");
+    t.frames(4).await?;
+    let d = walk().await?;
+    t.probe("toggled off, against walking", (d / plain) as f32, d > plain * 0.8);
+    TOGGLE_SNEAK.set(false);
+    Ok(())
+}
+
 pub async fn crafting_table_tags(t: T) -> R {
     t.flat().await?;
     let f = t.feet();

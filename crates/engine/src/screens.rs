@@ -508,18 +508,7 @@ impl Screen for SettingsScreen {
                         r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
-                    d.button("settings.invert_y", &[on_off(s.invert_y())], 300.0, false, |r| {
-                        r.settings.set("invert_y", !r.settings.invert_y() as u8 as f64);
-                        r.handle(vec![Request::Rebuild]);
-                    });
-                    d.button("settings.toggle_sneak", &[on_off(s.toggle_sneak())], 300.0, false, |r| {
-                        r.settings.set("toggle_sneak", !r.settings.toggle_sneak() as u8 as f64);
-                        r.handle(vec![Request::Rebuild]);
-                    });
-                    d.button("settings.toggle_sprint", &[on_off(s.toggle_sprint())], 300.0, false, |r| {
-                        r.settings.set("toggle_sprint", !r.settings.toggle_sprint() as u8 as f64);
-                        r.handle(vec![Request::Rebuild]);
-                    });
+
                     let row = abi::UiNode { row: 1, gap: 6.0, justify: abi::ui_justify::CENTER, align: abi::ui_align::CENTER, self_align: abi::ui_align::STRETCH, ..desc::node(abi::ui_kind::CONTAINER) };
                     for [(a, sa), (b, sb)] in [
                         [("settings.language", "core:language"), ("settings.controls", "core:controls")],
@@ -782,6 +771,16 @@ impl Screen for Controls {
                 label(ui, cx, "controls.press", &[Arg::Name(text::Name::Key(a.clone()))], "default");
             }
             let list = ui.panel("panel", Style::default().pad(8.0).gap(3.0).stretch().w(380.0).h(0.0).grow().min_h(60.0).scroll(), |ui| {
+                let s = cx.settings;
+                for (name, on) in [("invert_y", s.invert_y()), ("toggle_sneak", s.toggle_sneak()), ("toggle_sprint", s.toggle_sprint())] {
+                    let spans = cx.t(&format!("settings.{name}"), &[on_off(on)]);
+                    ui.button("button", Style::default().min_h(20.0).pad_xy(6.0, 4.0).stretch(), Rc::new(move |c: &mut Ctx| {
+                        c.settings.set(name, !on as u8 as f64);
+                        c.requests.push(Request::Rebuild);
+                    }), |ui| {
+                        ui.text(spans, "button");
+                    });
+                }
                 for b in &cx.input.binds {
                     let action = b.action.clone();
                     let name = text::Name::Key(b.action.clone());

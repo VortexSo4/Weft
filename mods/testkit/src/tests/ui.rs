@@ -341,7 +341,7 @@ pub async fn recipe_viewer(t: T) -> R {
     t.check(t.click_ui("id:tab:testmod:alloying", 0), "an alloying tab");
     t.secs(0.2).await?;
     t.frames(3).await?;
-    t.check(t.c().ui_rect("text:32 FE/t").is_some(), "the alloying recipe's energy in its info line");
+    t.check(t.c().ui_rect("text:32 EU/t").is_some(), "the alloying recipe's energy in its info line");
     t.shot("alloying").await?;
     // Tags: the list, then the items of one.
     t.check(t.click_ui("text:Tags", 0), "a tags button");

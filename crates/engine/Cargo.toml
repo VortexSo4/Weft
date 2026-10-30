@@ -15,7 +15,6 @@ log.workspace = true
 rayon.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
-libc.workspace = true
 libloading.workspace = true
 lz4_flex.workspace = true
 png.workspace = true
@@ -30,3 +29,6 @@ mimalloc.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

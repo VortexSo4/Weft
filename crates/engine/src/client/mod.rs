@@ -72,12 +72,9 @@ pub struct LocalPlayer {
     /// Walking speed and jump multipliers from the server (attributes).
     pub speed_mul: f64,
     pub jump_mul: f64,
-    /// Sprinting from a double tap of forward; it lasts while forward is held.
-    pub sprinting: bool,
-    /// Sneaking now, from the held key or the toggle setting.
+    /// Sneaking now and wanting to sprint now.
     pub sneak: bool,
-    /// Sprinting from the toggle setting, kept until it is switched off.
-    pub sprint_toggle: bool,
+    pub sprint: bool,
 }
 
 pub struct ClientEntity {
@@ -138,10 +135,6 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
     bytes.chunks_exact(4).map(|w| [w[0], w[1], w[2], w[3]])
 }
 
-/// A boolean engine setting (`core:*`), off when it is not declared.
-fn cfg_on(name: &str) -> bool {
-    crate::config::by_name(name).is_some_and(|id| crate::config::get(id) != 0.0)
-}
 
 impl ClientEntity {
     /// What its kind's client tick gets (`client` filled in by the caller).
@@ -286,9 +279,13 @@ pub struct Client {
     last_jump: Option<Instant>,
     /// When forward was last pressed, for double-tap sprinting.
     last_forward: Option<Instant>,
+    /// Sprinting from a double tap of forward; it lasts while forward is held.
+    double_tap_sprint: bool,
     /// Toggle-sneak and toggle-sprint states (the settings make the keys switch them).
     sneak_toggle: bool,
     sprint_toggle: bool,
+    /// The sprint key down with toggle sprint on, and whether it was used for dropping a stack.
+    sprint_key: Option<bool>,
     /// 0 first person, 1 third person from behind, 2 from the front.
     pub view: u8,
     /// F1: no hand and no block outline.
@@ -447,9 +444,8 @@ impl Client {
                 in_liquid: false,
                 speed_mul: 1.0,
                 jump_mul: 1.0,
-                sprinting: false,
                 sneak: false,
-                sprint_toggle: false,
+                sprint: false,
             },
             joined: false,
             player_id: 0,
@@ -508,8 +504,10 @@ impl Client {
             mode: GameMode::Survival,
             last_jump: None,
             last_forward: None,
+            double_tap_sprint: false,
             sneak_toggle: false,
             sprint_toggle: false,
+            sprint_key: None,
             view: 0,
             hide_gui: false,
             hand_swing: None,
@@ -899,28 +897,28 @@ impl Client {
             *o += (self.offset_target - *o).clamp(-0.05 * dt, 0.05 * dt);
         }
         let c = content();
-        let invert_y = cfg_on("core:invert_y");
         if input.captured {
             let sens = 0.0022 * input.sensitivity;
             self.player.yaw -= input.mouse_delta.x * sens;
-            let look = input.mouse_delta.y * sens * if invert_y { -1.0 } else { 1.0 };
+            let look = input.mouse_delta.y * sens * if input.invert_y { -1.0 } else { 1.0 };
             self.player.pitch = (self.player.pitch - look).clamp(-1.55, 1.55);
         }
         // Sneak and sprint can be switched on and off instead of held. Sprinting still needs
         // forward movement, and flying keeps the sneak key as "go down".
-        let (toggle_sneak, toggle_sprint) = (cfg_on("core:toggle_sneak"), cfg_on("core:toggle_sprint"));
         if input.captured {
-            if toggle_sneak && !self.player.flying && input.pressed("core:sneak") {
+            if input.toggle_sneak && !self.player.flying && input.pressed("core:sneak") {
                 self.sneak_toggle = !self.sneak_toggle;
             }
-            if !toggle_sneak {
+            if !input.toggle_sneak {
                 self.sneak_toggle = false;
             }
-            if toggle_sprint && input.pressed("core:sprint") {
+            // Switches when let go: the same key held with drop throws a whole stack instead.
+            if !input.toggle_sprint {
+                (self.sprint_toggle, self.sprint_key) = (false, None);
+            } else if input.held("core:sprint") {
+                *self.sprint_key.get_or_insert(false) |= input.pressed("core:drop");
+            } else if self.sprint_key.take() == Some(false) {
                 self.sprint_toggle = !self.sprint_toggle;
-            }
-            if !toggle_sprint {
-                self.sprint_toggle = false;
             }
             // Sneaking ends a sprint, toggled or not.
             if input.pressed("core:sneak") {
@@ -928,8 +926,7 @@ impl Client {
             }
         }
         let sneak_held = input.held("core:sneak");
-        self.player.sneak = if self.player.flying { sneak_held } else if toggle_sneak { self.sneak_toggle } else { sneak_held };
-        self.player.sprint_toggle = self.sprint_toggle;
+        self.player.sneak = if input.toggle_sneak && !self.player.flying { self.sneak_toggle } else { sneak_held };
         if self.mode == GameMode::Creative && input.captured {
             if input.pressed("core:fly") {
                 self.player.flying = !self.player.flying;
@@ -947,14 +944,16 @@ impl Client {
         if input.captured {
             if input.pressed("core:forward") {
                 match self.last_forward.take() {
-                    Some(t) if t.elapsed().as_secs_f32() < 0.35 => self.player.sprinting = true,
+                    Some(t) if t.elapsed().as_secs_f32() < 0.35 => self.double_tap_sprint = true,
                     _ => self.last_forward = Some(Instant::now()),
                 }
             }
             if !input.held("core:forward") || input.held("core:back") || self.player.sneak {
-                self.player.sprinting = false;
+                self.double_tap_sprint = false;
             }
         }
+        let sprint_key = if input.toggle_sprint { self.sprint_toggle } else { input.held("core:sprint") };
+        self.player.sprint = sprint_key || self.double_tap_sprint;
         let old = self.selected;
         let spectator = self.mode == GameMode::Spectator;
         // In a screen the number keys belong to it (swapping slots with the hotbar).
@@ -985,8 +984,7 @@ impl Client {
         let eye_target = self.player.dims().2;
         self.player.eye += (eye_target - self.player.eye) * k;
         let moving = input.held("core:forward");
-        let sprinting = input.held("core:sprint") || self.player.sprinting || self.player.sprint_toggle;
-        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if sprinting && moving && !sneaking { 0.15 } else { 0.0 };
+        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if self.player.sprint && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
         if input.pressed("core:perspective") && input.captured {
             self.view = (self.view + 1) % 3;
@@ -1796,7 +1794,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     let sneak = p.sneak;
     let jump = input.held("core:jump");
     // Sprinting needs forward movement and stops when walking backwards or sneaking.
-    let sprint = (input.held("core:sprint") || p.sprinting || p.sprint_toggle) && fwd_in > 0.0 && !sneak;
+    let sprint = p.sprint && fwd_in > 0.0 && !sneak;
     if sneak && !p.flying {
         fwd_in *= 0.3;
         side_in *= 0.3;
