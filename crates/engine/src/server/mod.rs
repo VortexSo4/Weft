@@ -1079,16 +1079,13 @@ impl Server {
                 let spawn = self.dims[c.spawn_dim as usize].spawn_point(c);
                 self.change_dim(c, pi, c.spawn_dim, spawn);
                 if let Some((r, entity)) = self.region(pi) {
-                    let ents = &mut r.entities;
-                    for ((id, comp), bytes) in ents.comps.iter_mut() {
-                        if *id == entity {
-                            bytes.copy_from_slice(&c.game.components[*comp as usize].default);
-                        }
-                    }
+                    r.entities.reset_components(c, entity);
                     // After the components: modifiers are gone with them. Sent as any change.
                     let max = r.max_health(c, entity);
                     if let Some(e) = r.entities.get_mut(entity) {
                         e.health = max;
+                        e.fire = 0;
+                        e.hurt_cooldown = 0;
                     }
                 }
             }

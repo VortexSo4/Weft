@@ -615,3 +615,32 @@ pub async fn own_names(t: T) -> R {
     t.check(back.is_ok(), "the broken chest's item has its name again");
     Ok(())
 }
+
+/// Respawning: every player has variable-sized components (hunger's timer), which once crashed
+/// the server on any death. What belongs to the body starts over (hunger, effects); mods' timers
+/// go on, or hunger's pulse, armed once on joining, would stop for good.
+pub async fn respawn(t: T) -> R {
+    t.flat().await?;
+    t.op("mode survival").await?;
+    for with_effect in [false, true] {
+        t.cmd("/feed 5").await?;
+        t.until("food down", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food <= 5.0)).await?;
+        if with_effect {
+            t.op("attr_mod me core:movement_speed testkit:fast 1 1 0").await?;
+        }
+        t.cmd("/kill").await?;
+        t.screen("core:death").await?;
+        t.c().respawn();
+        t.no_screen().await?;
+        t.until("hunger starts over", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 20.0)).await?;
+        let speed = t.op("attr me core:movement_speed").await?;
+        t.check(!speed.contains("testkit:fast"), format!("no effect after respawning: {speed}"));
+        t.check_eq(t.op("health").await?, "20".to_string(), "full health again");
+    }
+    // Starving takes health at hunger's next pulse (every 4 seconds).
+    t.cmd("/feed 0").await?;
+    t.secs(4.5).await?;
+    let health: f32 = t.op("health").await?.parse().unwrap_or(20.0);
+    t.check(health < 20.0, format!("hunger's pulse still runs: health {health}"));
+    Ok(())
+}

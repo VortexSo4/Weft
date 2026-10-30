@@ -172,6 +172,14 @@ pub struct Entities {
 pub const SAFE_FALL: f32 = 3.0;
 
 
+/// What a component of an entity of `kind` starts as: the kind's own value, or the component's.
+fn starting_value(c: &Content, kind: &crate::registry::EntityKind, comp: u32) -> Box<[u8]> {
+    match kind.values.iter().find(|v| v.0 == comp) {
+        Some(v) => v.1.clone(),
+        None => c.game.components[comp as usize].default.clone().into_boxed_slice(),
+    }
+}
+
 impl Entities {
     pub fn get(&self, id: u64) -> Option<&Entity> {
         self.index.get(&id).map(|&i| &self.list[i]).filter(|e| !e.removed)
@@ -185,10 +193,7 @@ impl Entities {
         let id = e.id;
         let kind = &c.game.entities[e.kind as usize];
         for &comp in &kind.components {
-            self.comps.entry((id, comp)).or_insert_with(|| match kind.values.iter().find(|v| v.0 == comp) {
-                Some(v) => v.1.clone(),
-                None => c.game.components[comp as usize].default.clone().into_boxed_slice(),
-            });
+            self.comps.entry((id, comp)).or_insert_with(|| starting_value(c, kind, comp));
         }
         if kind.slots > 0 {
             self.inventories.entry(id).or_insert_with(|| vec![ItemStack::EMPTY; kind.slots as usize]);
@@ -202,6 +207,17 @@ impl Entities {
         self.index.insert(id, self.list.len());
         self.list.push(e);
         self.spawned.push(id);
+    }
+
+    /// A new life for an entity that stays, what its kind attaches starts
+    /// over, as on `insert`, and modifiers end. The rest goes on: timers are mods' loops (hunger's
+    /// pulse is armed once, on joining) and `SIMULATED` at zero would replay all of world time.
+    pub fn reset_components(&mut self, c: &Content, id: u64) {
+        let Some(kind) = self.get(id).map(|e| &c.game.entities[e.kind as usize]) else { return };
+        for &comp in &kind.components {
+            self.comps.insert((id, comp), starting_value(c, kind, comp));
+        }
+        self.comps.remove(&(id, c.game.modifiers_comp));
     }
 
     /// `insert` with the inventory and components it had (loaded, or moved from another region).
