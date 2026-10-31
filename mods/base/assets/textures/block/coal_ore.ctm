@@ -1,0 +1,3 @@
+method = compact
+tiles = coal_ore/0-4
+inner_seams = true
