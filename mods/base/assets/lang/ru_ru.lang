@@ -164,6 +164,7 @@ bed.base.spawn_set = Точка возрождения установлена
 bed.base.not_night = Спать можно только ночью
 bed.base.monsters = Нельзя отдыхать, рядом монстры
 bed.base.occupied = Эта кровать занята
+bed.base.obstructed = Кровать загорожена
 bed.base.missing = Ваша кровать пропала, вы снова у точки появления
 hud.element.base.health = Здоровье
 hud.element.base.armor = Броня

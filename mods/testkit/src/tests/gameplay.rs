@@ -336,14 +336,51 @@ pub async fn advancements(t: T) -> R {
     Ok(())
 }
 
-/// A bed placed by a player takes two blocks, the head away from them. Used by day it sets the
-/// respawn point; at night the player lies down and, everybody asleep, the night is skipped;
-/// dead, the player comes back at the bed. Breaking one half takes the other and drops one bed.
-pub async fn beds(t: T) -> R {
-    use base_api::BED_SPAWN;
-    fn spawn(t: &T) -> Option<[i32; 3]> {
-        t.c().view().component(&BED_SPAWN).filter(|s| s.set != 0).map(|s| s.bed)
+fn bed_spawn(t: &T) -> Option<[i32; 3]> {
+    t.c().view().component(&base_api::BED_SPAWN).filter(|s| s.set != 0).map(|s| s.bed)
+}
+
+/// Clears room around the player and places a bed two blocks north the way a player does: gives
+/// its foot.
+async fn place_bed(t: &T) -> Result<[i32; 3], String> {
+    let f = t.feet();
+    t.fill(add(f, [-3, -1, -6]), add(f, [3, -1, 2]), "stone").await?;
+    t.fill(add(f, [-3, 0, -6]), add(f, [3, 4, 2]), "air").await?;
+    t.op("put me 0 bed 1").await?;
+    t.c().select(0);
+    let foot = add(f, [0, 0, -2]);
+    t.look_at(add(foot, [0, -1, 0]));
+    t.frames(2).await?;
+    t.press("core:use");
+    for _ in 0..30 {
+        if t.block(add(foot, [0, 0, -1])).await?.starts_with("base:bed") {
+            break;
+        }
+        t.secs(0.1).await?;
     }
+    Ok(foot)
+}
+
+/// Dies and comes back, up to the point the world is seen again.
+async fn die_and_respawn(t: &T) -> R {
+    t.cmd("/kill").await?;
+    t.screen("core:death").await?;
+    t.c().respawn();
+    t.no_screen().await
+}
+
+fn off_bed(t: &T, foot: [i32; 3]) -> f64 {
+    let p = t.state().pos;
+    ((p[0] - (foot[0] as f64 + 0.5)).powi(2) + (p[2] - (foot[2] as f64 + 0.5)).powi(2)).sqrt()
+}
+
+/// A bed placed by a player takes two blocks, the head away from them. Used by day it sets the
+/// respawn point; at night the player lies down unless it can't be done (no room, a monster of
+/// any kind near) and, everybody asleep, the night is skipped; being hurt gets them up; dead, the
+/// player comes back at the bed. Breaking one half takes the other and drops one bed, and an
+/// explosion taking one half takes the other too.
+pub async fn beds(t: T) -> R {
+    let spawn = bed_spawn;
     fn beds_held(t: &T) -> u32 {
         (0..36).map(|i| t.c().inventory_slot(i)).filter(|s| s.item == item("base:bed")).map(|s| s.count).sum()
     }
@@ -351,21 +388,8 @@ pub async fn beds(t: T) -> R {
     t.op("mode survival").await?;
     t.op("time 6000").await?;
     let f = t.feet();
-    t.fill(add(f, [-3, -1, -6]), add(f, [3, -1, 2]), "stone").await?;
-    t.fill(add(f, [-3, 0, -6]), add(f, [3, 4, 2]), "air").await?;
-    t.op("put me 0 bed 1").await?;
-    t.c().select(0);
-    let foot = add(f, [0, 0, -2]);
+    let foot = place_bed(&t).await?;
     let head = add(foot, [0, 0, -1]);
-    t.look_at(add(foot, [0, -1, 0]));
-    t.frames(2).await?;
-    t.press("core:use");
-    for _ in 0..30 {
-        if t.block(head).await?.starts_with("base:bed") {
-            break;
-        }
-        t.secs(0.1).await?;
-    }
     t.check(t.block(foot).await?.contains("part=foot"), format!("the foot where it was placed: {}", t.block(foot).await?));
     t.check(t.block(head).await?.contains("part=head"), format!("the head beyond it: {}", t.block(head).await?));
 
@@ -378,8 +402,30 @@ pub async fn beds(t: T) -> R {
     t.check(t.c().screen() != "base:sleeping", "no sleeping by day");
     t.shot("placed").await?;
 
-    // At night the player lies down, and the night is skipped.
     t.op("time 18000").await?;
+    // No room to stand on it.
+    t.set(add(foot, [0, 2, 0]), "stone").await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check(t.c().screen() != "base:sleeping", "no sleeping under a low ceiling");
+    t.set(add(foot, [0, 2, 0]), "air").await?;
+
+    // Any monster keeps the player up, by its tag.
+    let creeper = t.op(&format!("spawn base:creeper {} {} {}", foot[0] + 5, foot[1], foot[2])).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check(t.c().screen() != "base:sleeping", "no sleeping with a creeper near");
+    t.op(&format!("remove {}", creeper.trim())).await?;
+
+    // Being hurt gets them up.
+    t.press("core:use");
+    t.screen("base:sleeping").await?;
+    t.op("hurt_me 1").await?;
+    t.until("woken by the hit", Duration::from_secs(3), |t| t.c().screen() != "base:sleeping").await?;
+
+    // At night the player lies down, and the night is skipped.
+    t.look_at(foot);
+    t.frames(2).await?;
     t.press("core:use");
     t.screen("base:sleeping").await?;
     t.secs(2.5).await?;
@@ -391,13 +437,9 @@ pub async fn beds(t: T) -> R {
 
     // Dead, back at the bed (on its foot), the respawn point still set.
     // The world's spawn is two blocks from the bed: only the bed puts the player on it.
-    t.cmd("/kill").await?;
-    t.screen("core:death").await?;
-    t.c().respawn();
-    t.no_screen().await?;
+    die_and_respawn(&t).await?;
     t.secs(1.0).await?;
-    let p = t.state().pos;
-    let off = ((p[0] - (foot[0] as f64 + 0.5)).powi(2) + (p[2] - (foot[2] as f64 + 0.5)).powi(2)).sqrt();
+    let off = off_bed(&t, foot);
     t.check(off < 1.5, format!("respawned {off:.1} blocks from the bed"));
     t.check(spawn(&t) == Some(foot), "the respawn point survives death");
 
@@ -409,25 +451,91 @@ pub async fn beds(t: T) -> R {
     t.secs(0.5).await?;
     t.check_eq(beds_held(&t), 1, "beds dropped");
 
-    // Facing each way, seen from above: the pillow is at the far end from where it faces.
-    for (i, facing) in ["north", "east", "south", "west"].iter().enumerate() {
-        let x = f[0] - 3 + i as i32 * 2;
-        let d = match *facing {
-            "north" => [0, 0, -1],
-            "south" => [0, 0, 1],
-            "east" => [1, 0, 0],
-            _ => [-1, 0, 0],
-        };
-        let foot = [x, f[1], f[2] - 4];
-        t.set(foot, &format!("bed[facing={facing},part=foot]")).await?;
-        t.set([foot[0] - d[0], foot[1], foot[2] - d[2]], &format!("bed[facing={facing},part=head]")).await?;
-    }
+    // Placed each way: the head away from the player, the bed facing them. Seen from above, the
+    // pillow is at the far end of each.
     t.op("mode creative").await?;
     t.c().fly(true);
-    t.c().teleport([f[0] as f64 + 0.5, f[1] as f64 + 6.0, f[2] as f64 - 3.5]);
+    t.fill(add(f, [-4, -1, -4]), add(f, [4, -1, 4]), "stone").await?;
+    t.fill(add(f, [-4, 0, -4]), add(f, [4, 4, 4]), "air").await?;
+    t.c().teleport([f[0] as f64 + 0.5, f[1] as f64, f[2] as f64 + 0.5]);
+    t.secs(0.3).await?;
+    for (facing, d) in [("south", [0, 0, -1]), ("west", [1, 0, 0]), ("north", [0, 0, 1]), ("east", [-1, 0, 0])] {
+        t.op("put me 0 bed 1").await?;
+        let foot = [f[0] + d[0] * 2, f[1], f[2] + d[2] * 2];
+        let head = add(foot, d);
+        t.look_at(add(foot, [0, -1, 0]));
+        t.frames(2).await?;
+        t.press("core:use");
+        t.until(&format!("the {facing} bed"), Duration::from_secs(3), |t| t.c().block(head).is_some_and(|s| s != 0)).await?;
+        let (a, b) = (t.block(foot).await?, t.block(head).await?);
+        t.check(a.contains("part=foot") && a.contains(&format!("facing={facing}")), format!("the foot: {a}"));
+        t.check(b.contains("part=head") && b.contains(&format!("facing={facing}")), format!("the head: {b}"));
+    }
+    t.c().teleport([f[0] as f64 + 0.5, f[1] as f64 + 7.0, f[2] as f64 + 0.5]);
+    // Landing ended the flight.
+    t.c().fly(true);
     t.c().look(0.0, -89.0);
     t.secs(1.0).await?;
     t.shot("facings").await?;
+
+    // An explosion takes one half without breaking it.
+    let foot = add(f, [0, 0, -2]);
+    let head = add(foot, [0, 0, -1]);
+    t.c().teleport([head[0] as f64 + 1.5, head[1] as f64, head[2] as f64 + 0.5]);
+    t.secs(0.2).await?;
+    t.op("crater_fast 1").await?;
+    t.until("the head gone", Duration::from_secs(2), |t| t.c().block(head) == Some(0)).await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.block(foot).await?, "core:air".into(), "the foot goes with the head in an explosion");
+    Ok(())
+}
+
+/// The respawn point holds wherever the bed is: far from the spawn, so nothing around it is
+/// loaded when the player comes back, and in another dimension. A bed gone meanwhile puts them back
+/// at the spawn, without a respawn point.
+pub async fn beds_far(t: T) -> R {
+    t.world(3).await?;
+    t.op("mode creative").await?;
+    t.c().fly(true);
+    t.op("time 6000").await?;
+    let home = t.state().pos;
+    t.cmd("/tp ~1500 ~30 ~").await?;
+    t.until("far away", Duration::from_secs(10), |t| (t.state().pos[0] - home[0]).abs() > 1000.0).await?;
+    t.loaded().await?;
+    let foot = place_bed(&t).await?;
+    t.look_at(foot);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.until("respawn point set", Duration::from_secs(5), |t| bed_spawn(t) == Some(foot)).await?;
+    t.op("mode survival").await?;
+
+    die_and_respawn(&t).await?;
+    t.until("back on the bed", Duration::from_secs(20), |t| off_bed(t, foot) < 1.5).await?;
+    t.secs(1.0).await?;
+    t.check(off_bed(&t, foot) < 1.5, format!("still {:.1} blocks from the bed", off_bed(&t, foot)));
+    t.check(bed_spawn(&t) == Some(foot), "the respawn point stays");
+
+    t.op(&format!("break {} {} {}", foot[0], foot[1], foot[2])).await?;
+    t.frames(2).await?;
+    die_and_respawn(&t).await?;
+    t.until("the respawn point gone", Duration::from_secs(20), |t| bed_spawn(t).is_none()).await?;
+    t.until("back at the spawn", Duration::from_secs(20), |t| (t.state().pos[0] - home[0]).abs() < 100.0).await?;
+
+    t.cmd("/dim base:flatlands").await?;
+    let dim = Dimension::lookup("base:flatlands").unwrap_or(u32::MAX);
+    t.until("flatlands", Duration::from_secs(20), |t| t.state().dim == dim).await?;
+    t.loaded().await?;
+    t.op("time 6000").await?;
+    let foot = place_bed(&t).await?;
+    t.look_at(foot);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.until("respawn point set there", Duration::from_secs(5), |t| bed_spawn(t) == Some(foot)).await?;
+    die_and_respawn(&t).await?;
+    t.until("back on the bed there", Duration::from_secs(20), |t| t.state().dim == dim && off_bed(t, foot) < 1.5).await?;
+    t.secs(1.0).await?;
+    t.check_eq(t.state().dim, dim, "stays in the bed's dimension");
+    t.check(bed_spawn(&t) == Some(foot), "the respawn point stays there too");
     Ok(())
 }
 

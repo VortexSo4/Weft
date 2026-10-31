@@ -193,6 +193,7 @@ bed.base.spawn_set = Respawn point set
 bed.base.not_night = You can only sleep at night
 bed.base.monsters = You may not rest now, there are monsters nearby
 bed.base.occupied = This bed is occupied
+bed.base.obstructed = This bed is obstructed
 bed.base.missing = Your bed was missing, so you are back at the spawn
 hud.element.base.health = Health
 hud.element.base.armor = Armor

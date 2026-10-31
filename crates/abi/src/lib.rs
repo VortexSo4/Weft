@@ -1592,6 +1592,10 @@ pub struct Host {
     pub stack_with: unsafe extern "C" fn(data: u32, comp: u32, value: Slice<u8>, remove: u32) -> u32,
 
     pub get_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    /// `u32::MAX` if the position is not loaded where this callback runs.
+    pub get_block_loaded: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    /// The id of the dimension this callback runs in.
+    pub world_dimension: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
     /// Returns 0 if the position is not loaded.
     pub set_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], state: u32) -> u32,
     pub schedule_tick: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], delay: u32),
