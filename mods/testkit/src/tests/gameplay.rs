@@ -324,6 +324,13 @@ pub async fn advancements(t: T) -> R {
     t.screen("core:pause").await?;
     t.c().close_screen();
     t.no_screen().await?;
+    // Dying takes none of them.
+    t.cmd("/kill").await?;
+    t.screen("core:death").await?;
+    t.c().respawn();
+    t.no_screen().await?;
+    t.secs(1.0).await?;
+    t.check_eq(made(&t).count_ones(), 2, "advancements after dying");
     t.cmd("/advancements reset").await?;
     t.until("advancements reset", Duration::from_secs(5), |t| made(t) == 0).await?;
     Ok(())

@@ -94,7 +94,8 @@ const TOAST_MARGIN: f32 = 4.0;
 const ICON_Y: f32 = 9.0;
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&ADVANCEMENTS, Advancements { done: 0 }, component_flags::SAVE | component_flags::SYNC_OWNER);
+    // Kept through death: what a player made stays made.
+    r.entity_component(&ADVANCEMENTS, Advancements { done: 0 }, component_flags::SAVE | component_flags::SYNC_OWNER | component_flags::KEEP);
     r.attach(&PLAYER, &ADVANCEMENTS);
     r.sound(&CHIME).files(&["random/advancement"]).category(&sound_categories::UI);
 
