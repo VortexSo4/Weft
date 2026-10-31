@@ -8,6 +8,9 @@ var<private> SHADE: array<f32, 6> = array<f32, 6>(0.6, 0.6, 0.5, 1.0, 0.8, 0.8);
 
 // How far into the fog a point at `dist` is, 0..1.
 fn fog_amount(dist: f32, start: f32, end: f32) -> f32 {
+    if dist <= start {
+        return 0.0;
+    }
     return clamp((dist - start) / max(end - start, 1.0), 0.0, 1.0);
 }
 
@@ -29,13 +32,21 @@ fn lightmap(light: vec4<f32>, day: f32, ambient: f32, bright: f32) -> vec3<f32> 
     let sky = brightness_curve(light.x) * mix(0.24, 1.0, d);
     var c = max(vec3(0.04), vec3(brightness_curve(ambient))) + mix(vec3(0.478, 0.478, 1.0), vec3(1.0), d) * sky;
     let block = light.yzw;
-    let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
-    let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
-    c += tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4;
+    if any(block > vec3(0.0)) {
+        let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
+        let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
+        c += tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4;
+    }
     c = clamp(c, vec3(0.0), vec3(1.0));
     let m = max(max(c.x, c.y), c.z);
-    let lifted = c * ((1.0 - pow(1.0 - m, 4.0)) / max(m, 1e-4));
-    return mix(c, lifted, bright);
+    if m > 1e-4 {
+        let one_minus_m = 1.0 - m;
+        let m2 = one_minus_m * one_minus_m;
+        let m4 = m2 * m2;
+        let lifted = c * ((1.0 - m4) / m);
+        return mix(c, lifted, bright);
+    }
+    return c;
 }
 
 // What snippets get (`shaders.rs`), here so a shader pack replacing an engine shader keeps them.

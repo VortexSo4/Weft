@@ -21,6 +21,7 @@ struct VOut {
     // Block shader slot of the texture, 0 none, and the block coordinates for it.
     @location(10) @interpolate(flat) slot: u32,
     @location(11) pos: vec3<f32>,
+    @location(12) @interpolate(flat) size: f32,
 }
 
 fn shader_of(tex: u32) -> u32 {
@@ -74,13 +75,15 @@ struct Frame {
     a: u32,
     b: u32,
     blend: f32,
+    size: f32,
 }
 
 fn texture_frame(name: u32) -> Frame {
-    let base = tex_info[name * 2u];
-    let info = tex_info[name * 2u + 1u];
+    let base = tex_info[name * 4u];
+    let info = tex_info[name * 4u + 1u];
+    let size = f32(tex_info[name * 4u + 2u]);
     if info == 0u {
-        return Frame(base, base, 0.0);
+        return Frame(base, base, 0.0, size);
     }
     let count = info & 65535u;
     let total = f32((info >> 16u) & 32767u);
@@ -96,11 +99,11 @@ fn texture_frame(name: u32) -> Frame {
             if (info >> 31u) == 1u {
                 f = (t - acc) / d;
             }
-            return Frame(e & 65535u, next & 65535u, f);
+            return Frame(e & 65535u, next & 65535u, f, size);
         }
         acc += d;
     }
-    return Frame(base, base, 0.0);
+    return Frame(base, base, 0.0, size);
 }
 
 fn finish(local: vec3<f32>, origin: vec4<i32>) -> vec4<f32> {
@@ -129,24 +132,29 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = UVS[c];
-    let fr = texture_frame(w1 & FACE_TEX_MASK);
+    let tex_id = w1 & FACE_TEX_MASK;
+    let fr = texture_frame(tex_id);
+    out.size = fr.size;
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
     out.glow = glow_of(fr.a);
     out.light = corner_light(w2, w3, c);
     let o = origins[ii] + g.cam_cube;
-    out.slot = shader_of(w1 & FACE_TEX_MASK);
+    out.slot = shader_of(tex_id);
     out.pos = vec3<f32>(o.xyz * 16) + local;
-    let tint = tint_color((w0 >> FACE_TINT_SHIFT) & TINT_MASK, w1 >> FACE_BIOME_SHIFT, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
-    let ov = frames[g.extra.x + (w1 & FACE_TEX_MASK)];
+    let tint_kind = (w0 >> FACE_TINT_SHIFT) & TINT_MASK;
+    var tint = vec3(1.0);
+    if tint_kind != 0u {
+        tint = tint_color(tint_kind, w1 >> FACE_BIOME_SHIFT, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
+    }
+    out.tint = tint;
+    let ov = frames[g.extra.x + tex_id];
     if ov != 0u {
         out.overlay = texture_frame(ov - 1u).a + 1u;
-        out.tint = tint;
         out.color = vec3(SHADE[dir] * AO[a[c]]);
     } else {
         out.overlay = 0u;
-        out.tint = tint;
         out.color = tint * SHADE[dir] * AO[a[c]];
     }
     return out;
@@ -176,17 +184,24 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = uvs[c];
-    let fr = texture_frame(w4 & FACE_TEX_MASK);
+    let tex_id = w4 & FACE_TEX_MASK;
+    let fr = texture_frame(tex_id);
+    out.size = fr.size;
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
     out.glow = glow_of(fr.a);
     out.light = corner_light(records[base + 6u], records[base + 7u], c);
     let o = origins[ii] + g.cam_cube;
-    out.slot = shader_of(w4 & FACE_TEX_MASK);
+    out.slot = shader_of(tex_id);
     out.pos = vec3<f32>(o.xyz * 16) + local;
-    out.tint = tint_color((uvw >> QUAD_TINT_SHIFT) & TINT_MASK, w4 >> FACE_BIOME_SHIFT, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z)));
-    out.color = out.tint * shade;
+    let tint_kind = (uvw >> QUAD_TINT_SHIFT) & TINT_MASK;
+    var tint = vec3(1.0);
+    if tint_kind != 0u {
+        tint = tint_color(tint_kind, w4 >> FACE_BIOME_SHIFT, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z)));
+    }
+    out.tint = tint;
+    out.color = tint * shade;
     out.overlay = 0u;
     return out;
 }
@@ -199,69 +214,83 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
         let e = textureSampleLevel(textures[in.glow], nearest_clamp, in.uv, 0.0).r;
         light = max(light, select(in.tint, vec3(1.0), in.overlay != 0u) * e);
     }
-    // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
-    // as their linear equivalent or AO and shadows come out washed out.
-    let lit = block_shade(in.slot, BlockPixel(in.uv, albedo, pow(light, vec3(2.2)), in.pos, scene.params.w));
+    var linear_light: vec3<f32>;
+    if light.r == light.g && light.r == light.b {
+        linear_light = vec3(pow(light.r, 2.2));
+    } else {
+        linear_light = pow(light, vec3(2.2));
+    }
+    var lit: vec4<f32>;
+    if in.slot == 0u {
+        lit = vec4(albedo.rgb * linear_light, albedo.a);
+    } else {
+        lit = block_shade(in.slot, BlockPixel(in.uv, albedo, linear_light, in.pos, scene.params.w));
+    }
     let fog = fog_amount(in.dist, scene.params.x, scene.params.y);
+    if fog <= 0.0 {
+        return lit;
+    }
     return vec4(mix(lit.rgb, scene.fog_color.rgb, fog), lit.a);
 }
 
 // Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel
 // keeps its color but its edge blends over one screen pixel, so blocks look clean, not jagged.
-fn nearest_uv(tex: u32, uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
-    let size = vec2<f32>(textureDimensions(textures[tex]).xy);
-    let per_pixel = sqrt(du * du + dv * dv) * size;
+fn nearest_uv(size: f32, uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
+    let inv_s = 1.0 / size;
     let t = uv * size;
-    let center = round(t) - 0.5;
-    let off = clamp((t - center - 0.5) / max(per_pixel, vec2(1e-5)) + 0.5, vec2(0.0), vec2(1.0));
-    return (center + off) / size;
+    let r = round(t);
+    let inv_pp = inverseSqrt(max(du * du + dv * dv, vec2(1e-10))) * inv_s;
+    let off = clamp((t - r) * inv_pp + 0.5, vec2(0.0), vec2(1.0));
+    return (r - 0.5 + off) * inv_s;
 }
 
-fn sample(in: VOut) -> vec4<f32> {
-    let du = dpdx(in.uv);
-    let dv = dpdy(in.uv);
-    let a = textureSampleGrad(textures[in.layer], linear_mipped, nearest_uv(in.layer, in.uv, du, dv), du, dv);
+fn sample(in: VOut, nuv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
+    let a = textureSampleGrad(textures[in.layer], linear_mipped, nuv, du, dv);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSampleGrad(textures[in.layer2], linear_mipped, nearest_uv(in.layer2, in.uv, du, dv), du, dv);
+    let b = textureSampleGrad(textures[in.layer2], linear_mipped, nuv, du, dv);
     return mix(a, b, in.blend);
 }
 
 // The tinted overlay over the base texture; its tint is a gamma-space factor like the others.
-fn with_overlay(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
+fn with_overlay(in: VOut, albedo: vec4<f32>, nuv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
     if in.overlay == 0u {
         return albedo;
     }
-    let du = dpdx(in.uv);
-    let dv = dpdy(in.uv);
-    let ov = textureSampleGrad(textures[in.overlay - 1u], linear_mipped, nearest_uv(in.overlay - 1u, in.uv, du, dv), du, dv);
+    let ov = textureSampleGrad(textures[in.overlay - 1u], linear_mipped, nuv, du, dv);
     return vec4(mix(albedo.rgb, ov.rgb * pow(in.tint, vec3(2.2)), ov.a), albedo.a);
 }
 
 @fragment
 fn fs_opaque(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = with_overlay(in, sample(in));
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let nuv = nearest_uv(in.size, in.uv, du, dv);
+    let albedo = with_overlay(in, sample(in, nuv, du, dv), nuv, du, dv);
     return vec4(shade(in, albedo).rgb, 1.0);
 }
 
 // Mip level from the smaller screen derivative: a plant quad seen almost edge-on would otherwise
 // pick a tiny mip whose averaged texels cover the whole quad and draw it as a solid strip.
-fn sample_cutout(in: VOut) -> vec4<f32> {
-    let size = f32(textureDimensions(textures[in.layer]).x);
+fn sample_cutout(in: VOut, nuv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
+    let size = in.size;
     let t = in.uv * size;
-    let lod = max(log2(max(min(length(dpdx(t)), length(dpdy(t))), 1e-6)), 0.0);
-    let a = textureSampleLevel(textures[in.layer], linear_mipped, nearest_uv(in.layer, in.uv, dpdx(in.uv), dpdy(in.uv)), lod);
+    let lod = max(log2(max(min(length(du * size), length(dv * size)), 1e-6)), 0.0);
+    let a = textureSampleLevel(textures[in.layer], linear_mipped, nuv, lod);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSampleLevel(textures[in.layer2], linear_mipped, nearest_uv(in.layer2, in.uv, dpdx(in.uv), dpdy(in.uv)), lod);
+    let b = textureSampleLevel(textures[in.layer2], linear_mipped, nuv, lod);
     return mix(a, b, in.blend);
 }
 
 @fragment
 fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = with_overlay(in, sample_cutout(in));
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let nuv = nearest_uv(in.size, in.uv, du, dv);
+    let albedo = with_overlay(in, sample_cutout(in, nuv, du, dv), nuv, du, dv);
     // Vanilla's alpha test (GL_GREATER 0.1).
     if albedo.a <= 0.1 {
         discard;
@@ -271,7 +300,10 @@ fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = with_overlay(in, sample(in));
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let nuv = nearest_uv(in.size, in.uv, du, dv);
+    let albedo = with_overlay(in, sample(in, nuv, du, dv), nuv, du, dv);
     return shade(in, albedo);
 }
 
@@ -297,6 +329,7 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     out.dist = length(pos.xyz);
     out.uv = pos.xz;
     let fr = texture_frame(w1 & FACE_TEX_MASK);
+    out.size = fr.size;
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;

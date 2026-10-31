@@ -82,7 +82,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
 // at the horizon, since it soon leaves through the other plane.
 // uv: the camera's place in its cell (x, z), the cell in the picture (x, z). extra: cell size,
 // thickness, height over the camera, how far they reach.
-const CLOUD_STEPS: u32 = 256u;
+const CLOUD_STEPS: u32 = 128u;
 
 struct CloudOut {
     @builtin(position) clip: vec4<f32>,
@@ -129,7 +129,7 @@ fn fs_clouds(in: CloudOut) -> CloudPixel {
     if near >= far {
         discard;
     }
-    let dims = vec2<f32>(textureDimensions(textures[s.ids.x]));
+    let dims = vec2<f32>(f32(s.ids.z), f32(s.ids.w));
     let start = s.uv.xy + dir.xz * near / size;
     var cell = floor(start);
     let turn = sign(dir.xz);
