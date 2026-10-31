@@ -1190,6 +1190,7 @@ impl Running {
         let dev = self.lang.dev;
         let test = |t: &text::Test| match t {
             text::Test::Keys(keys) => keys.iter().all(|k| if k.contains(':') { ctx.input.held(k) } else { crate::settings::parse_key(k).is_some_and(|key| ctx.input.held_key(key)) }),
+            text::Test::Fixed(holds) => *holds,
             text::Test::If(name) => {
                 if let Some(&(_, v)) = asked.borrow().iter().find(|(n, _)| n == name) {
                     return v;

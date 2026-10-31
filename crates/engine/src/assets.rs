@@ -459,11 +459,24 @@ mod tests {
 
 static CURRENT: std::sync::RwLock<Option<std::sync::Arc<Assets>>> = std::sync::RwLock::new(None);
 static SIZES: std::sync::Mutex<Option<FxHashMap<String, Option<(u32, u32)>>>> = std::sync::Mutex::new(None);
+static STATES: std::sync::Mutex<Option<FxHashMap<String, Vec<(f32, String)>>>> = std::sync::Mutex::new(None);
 
 /// The assets the game uses now, for code that has no handle to them (inline images in text).
 pub fn set_current(a: &Assets) {
     *CURRENT.write().unwrap() = Some(std::sync::Arc::new(a.clone()));
     *SIZES.lock().unwrap() = None;
+    *STATES.lock().unwrap() = None;
+}
+
+/// The pictures of a picture's states and the share of it each stands for (`ui::meter`).
+pub fn picture_states(name: &str) -> Vec<(f32, String)> {
+    let mut map = STATES.lock().unwrap();
+    let map = map.get_or_insert_with(|| {
+        let assets = CURRENT.read().unwrap().clone();
+        let names = assets.map_or(Vec::new(), |a| a.list("textures", "png"));
+        crate::ui::meter::states_from(names.iter().map(|n| n.0.as_str())).collect()
+    });
+    map.get(name).cloned().unwrap_or_default()
 }
 
 /// Pixel size of a texture (`base:gui/arrow`), read once from its PNG header.

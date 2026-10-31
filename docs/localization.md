@@ -1,8 +1,8 @@
-# Tooltips guide
+# Localization guide
 
-Tooltips are the boxes that follow the cursor over items, creative tabs and settings.\
-They are written in the language files, so there is no code for the usual case, and any mod or
-resource pack can add or change them, and even for things in other mods.
+All the text in the game comes from the language files, tooltips included (the boxes that follow the
+cursor over items, creative tabs and settings). There is no code for the usual case, and any mod or
+resource pack can add or change text, even for things in other mods.
 
 ## Note
 The text is a normal translation, so everything from the rich text list below works in it.\
@@ -10,7 +10,7 @@ Examples to copy from: `mods/base/assets/lang/en_us.lang` (`block.base.furnace.t
 and `mods/testmod/assets/lang/en_us.lang` (`item.testmod.rune.tooltip`, with effects and conditions).
 
 ## Quick links
-[rich text](#rich-text) | [effects](#effects) | [conditions](#conditions) | [item tooltips](#item-tooltips) | [other tooltips](#other-tooltips) | [adding from outside](#adding-from-outside) | [look](#look) | [limits](#limits)
+[rich text](#rich-text) | [effects](#effects) | [conditions](#conditions) | [icons and meters](#icons-and-meters) | [item tooltips](#item-tooltips) | [lines by tag](#lines-by-tag) | [other tooltips](#other-tooltips) | [adding from outside](#adding-from-outside) | [look](#look) | [limits](#limits)
 
 ## Rich text
 Tags in the translation color the text, show keys and icons, hide parts or animate them.\
@@ -22,12 +22,14 @@ They work in any translation, not only in tooltips:
 | `{item:base:coal}` | draws the item's icon inline |
 | `{block:base:furnace[lit=true]}` | draws a block state like a block item; properties not named keep their defaults |
 | `{img:base:arrow}` | draws a texture from `gui/` at its own size, `{img:base:arrow 32x16}` at another (GUI pixels); the line grows to fit |
+| `{icons:base:food_full value.hunger/2}` | a row of a picture, as many as the number says, see [icons and meters](#icons-and-meters) |
+| `{value}`, `{value.hunger}`, `{value/200}`, `{value:food.hunger}` | a number from the item the text is about, see [lines by tag](#lines-by-tag) |
 | `{align:center}text{/align}` | lays out the lines inside centered (`left`, `right`); a picture alone on such a line is a centered picture |
 | `{key:core:sneak}` | the key the player has bound to that action |
 | `{lang:some.key}` | inserts another translation, so a shared phrase is written once |
 | `{name:item:base:coal}` | the display name of something, colors and all: `item:`, `block:`, `liquid:`, `tab:`, `mod:`, `recipe:`, `config:`, `key:`. Without a translation it shows the raw name. From code it's `Arg::Name("item:base:coal")` |
 | `{on_key:core:sneak}text{/on_key}` | shown only while the key is held; `!` in front inverts it; raw keys work too, but it's recommended to not use them |
-| `{if:creative}text{/if}` | shown while a condition holds, `!` inverts it: `{if:!creative}text{/if}` |
+| `{if:creative}text{/if}` | shown while a condition holds, `!` inverts it: `{if:!creative}text{/if}`; a comparison works too: `{if:value.toughness>0}` (`<`, `<=`, `>`, `>=`, `==`, `!=`) |
 | `{fx:core:wave}text{/fx}` | animates the text with an effect |
 | `{0}` ... `{9}` | arguments given by the code in order (durability uses them) |
 | `{{` | a literal `{` |
@@ -61,6 +63,23 @@ r.text_condition("charged", |v| v.player_component(&CHARGE).is_some_and(|c| *c >
 ```
 then `{if:mymod:charged}Charged!{/if}` in any translation.
 
+## Icons and meters
+`{icons:<picture> <amount>}` draws a row of a picture from `gui/`. The amount is a number or a value, and it doesn't have to be whole, `2.8` is two pictures and most of a third. Options go after it:
+```
+{icons:base:food_full value.hunger/2}
+{icons:mymod:star 2.8 dir:left size:16x16}
+```
+- `dir:` is where the part of a picture fills toward: `right` (default), `left`, `up`, `down`. With `left` the part comes first in the row
+- `size:` is the size of each in GUI pixels, by default the picture's own
+
+What the part of a picture looks like is up to the files next to it:
+- **Nothing else:** it's cut off, like a progress bar.
+- **`<picture>_<share>`:** the nearest one is drawn whole. `hunger_0.5.png` and `hunger_0.25.png` next to `hunger.png` give quarter steps, a share nearer to nothing than to the smallest one draws nothing.
+- **`<picture>_<frame>`:** when a number is over 1 they are frames of one turn, the share picks the nearest. `clock_0.png` to `clock_23.png` is a clock: 0.5 is `clock_12`.
+- **`<stem>_half`** is vanilla's name for the half of `<stem>_full`, so `food_full` and `food_half` work as they are.
+
+The same goes for the HUD's bars (`ui.icons`, `ui.icons_rtl`, `ui.icons_dir(class, count, ui_dir::UP, ..)`) and for the fill of a progress bar. They have a direction of their own instead of a mirrored picture.
+
 ## Item tooltips
 Hovering an item or block shows its name, and `<name key>.tooltip` under it if the language has one.\
 The name line is white, the tooltip lines are gray by default (a color you set wins).\
@@ -79,7 +98,7 @@ block.examplemod.lamp.tooltip = Glows warmly.
 ```
 
 The box is at most 320 GUI pixels wide, longer lines wrap.\
-Damaged tools get a `Durability: 12 / 250` line by themselves (its translation is `tooltip.durability`).
+Items that wear get a `Durability: 12 / 250` line by themselves (its translation is `tooltip.durability`).
 
 Long details usually hide behind the sneak key, so the tooltip stays short until the player wants to read that.\
 `{lang:tooltip.more}` is the ready phrase "Hold <key> for details":
@@ -87,6 +106,22 @@ Long details usually hide behind the sneak key, so the tooltip stays short until
 block.base.furnace.tooltip = Smelts ores and cooks food.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {#ffe070}fuel{/} in the bottom slot.{/on_key}
 ```
+
+## Lines by tag
+A line for every item with a tag or component, in one place, is `tagged.<name>`. It goes under the item's own tooltip, and a new item gets it just by having the tag:
+```
+tagged.food = {icons:base:food_full value.hunger/2}
+tagged.armor = {#5555ff}+{value.points} Armor{/}{if:value.toughness>0}\n{#5555ff}+{value.toughness} Armor Toughness{/}{/if}
+tagged.attack_damage = {#00aa00}{value} Attack Damage{/}
+tagged.mymod.magic = {#ff60ff}Magical{/}
+```
+`<name>` is the tag's or component's, with `.` for `:`.\
+`{value}` in it is that component's own number, `{value.field}` a field of it, and `/n` or `*n` scale it (`{value/200}`).\
+Anywhere in an item's tooltip `{value:food.hunger}` reads any component of the item by name. The stack's own value goes before its item's.\
+Numbers come from the item, so nothing in the language file changes when a mod adds a stronger sword.
+
+A line all behind a condition (`{on_key:core:sneak}...{/on_key}`, `{if:..}`) leaves no empty line while hidden.\
+Another mod adds its line to the same tag without replacing it, as with tooltips: `tagged.food.mymod = ...`.
 
 ## Other tooltips
 - **Settings:** `config.<mod>.<key>.tooltip` is shown over the setting's row in Mod Settings. Settings that the
@@ -131,7 +166,7 @@ The box is the class `tooltip`: `gui/tooltip.png` with its `.gui` (base's is a 9
 the lines under the name. A resource pack replaces the picture or the colors like anything else.
 
 ## Limits
-- the text is the same for every stack of an item, so no tooltips like an enchantment or a charge on one
-  stack; only conditions (`{if:}`, `{on_key:}`) vary it
+- own text is the same for every stack of an item; conditions (`{if:}`, `{on_key:}`) and numbers (`{value..}`, the stack's value first) vary it
 - no tooltips changed by code
-- text and inline item icons only, the box does not scroll: keep it to a few lines and put the rest behind sneak
+- text and inline pictures only, the box does not scroll: keep it to a few lines and put the rest behind sneak
+- conditions are calculated during the creation of tooltip so it can't be dynamic

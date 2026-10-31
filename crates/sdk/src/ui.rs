@@ -573,6 +573,16 @@ impl Ui {
     }
 
     /// Like `icons`, filling from the right (hunger).
+    pub fn icons_dir(&mut self, class: &str, count: u32, dir: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::ICONS, S::default());
+        n.class = Str::new(class);
+        n.count = count;
+        n.dir = dir;
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
+    /// `icons` filling from the right (`icons_dir` with `ui_dir::LEFT`).
     pub fn icons_rtl(&mut self, class: &str, count: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
         let mut n = node(k::ICONS, S::default());
         n.class = Str::new(class);

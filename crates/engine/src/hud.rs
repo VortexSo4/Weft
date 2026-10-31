@@ -690,35 +690,50 @@ pub fn stack_name(lang: &Lang, input: Option<&crate::input::Input>, stack: weft_
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
     let gray = lang.color("color.tooltip_dim").map(|c| c >> 8);
-    let cx = text::Ctx::new(lang, Some(input));
     let name = text::Name::Item(stack.item);
     let mut out = stack_name(lang, Some(input), stack);
-    let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
+    let line = |template: &str, args: &[text::Arg], own: Option<u32>, out: &mut Vec<text::Span>| {
+        let mut cx = text::Ctx::new(lang, Some(input));
+        cx.subject = Some(text::Subject { stack, own });
+        let break_at = out.len();
         out.push(text::Span::text("\n", None));
         let start = out.len();
         text::format(template, args, &cx, out);
         for s in &mut out[start..] {
             s.color = s.color.or(gray);
         }
+        // A line hidden as a whole leaves no empty line behind.
+        let first = out.get(start).map_or(Vec::new(), |s| s.when.clone());
+        let common: Vec<text::Cond> = first.into_iter().filter(|c| out[start..].iter().all(|s| s.when.contains(c))).collect();
+        out[break_at].when = common;
     };
-    if let Some(key) = name.key(lang).map(|k| format!("{k}.tooltip")) {
-        if lang.has(&key) {
-            line(lang.get(&key), &[], &mut out);
+    // With additions by mods, one group per mod in load order: `<key>.<mod id>`.
+    let mut mods: Vec<_> = content().mods.iter().collect();
+    mods.sort_by_key(|m| m.order);
+    let group = |key: &str, own: Option<u32>, out: &mut Vec<text::Span>| {
+        if lang.has(key) {
+            line(lang.get(key), &[], own, out);
         }
-        // Every mod can add lines of its own under `<tooltip key>.<mod id>`, in load order.
-        let mut mods: Vec<_> = content().mods.iter().collect();
-        mods.sort_by_key(|m| m.order);
-        for m in mods {
+        for m in &mods {
             let extra = format!("{key}.{}", m.id);
             if lang.has(&extra) {
-                line(lang.get(&extra), &[], &mut out);
+                line(lang.get(&extra), &[], own, out);
             }
         }
+    };
+    if let Some(key) = name.key(lang).map(|k| format!("{k}.tooltip")) {
+        group(&key, None, &mut out);
     }
-    let max = content().items.get(stack.item as usize).map_or(0, |d| d.durability);
-    let damage = crate::stack::damage(&stack);
-    if max > 0 && damage > 0 {
-        line(lang.get("tooltip.durability"), &[text::Arg::Int((max - damage.min(max)) as i64), text::Arg::Int(max as i64)], &mut out);
+    // What a tag or component says of every item with it, its numbers from this one.
+    let c = content();
+    for comp in c.components.of(crate::components::ITEM, stack.item) {
+        let key = text::lang_key("tagged", &c.components.names[comp as usize]);
+        group(&key, Some(comp), &mut out);
+    }
+    let max = c.items.get(stack.item as usize).map_or(0, |d| d.durability);
+    if max > 0 {
+        let damage = crate::stack::damage(&stack);
+        line(lang.get("tooltip.durability"), &[text::Arg::Int((max - damage.min(max)) as i64), text::Arg::Int(max as i64)], None, &mut out);
     }
     out
 }

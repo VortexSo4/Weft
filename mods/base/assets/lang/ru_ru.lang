@@ -51,6 +51,9 @@ block.base.crafting_table = Верстак
 block.base.furnace = Печь
 block.base.furnace.tooltip = Плавит руду и готовит еду.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Топливо ({item:base:coal} уголь, {item:base:oak_planks} доски и др.) кладётся в нижний слот.{/on_key}
+tagged.food = {icons:base:food_full value.hunger/2}
+tagged.armor = {#5555ff}Броня: +{value.points}{/}{if:value.toughness>0}\n{#5555ff}Стойкость брони: +{value.toughness}{/}{/if}
+tagged.fuel = Переплавляет предметов: {value/200}
 block.base.bed = Кровать
 block.base.bed.tooltip = Проспите ночь и возрождайтесь здесь после смерти.
 block.base.chest = Сундук
@@ -66,7 +69,6 @@ block.base.coal_block = Угольный блок
 block.base.wool = Шерсть
 item.base.stick = Палка
 item.base.coal = Уголь
-item.base.coal.tooltip = Топливо: плавит {color:key}8{/} предметов.
 item.base.iron_ingot = Железный слиток
 item.base.raw_iron = Сырое железо
 item.base.raw_gold = Сырое золото

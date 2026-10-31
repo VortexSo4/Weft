@@ -74,6 +74,9 @@ block.base.crafting_table = Crafting Table
 block.base.furnace = Furnace
 block.base.furnace.tooltip = Smelts ores and cooks food.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {color:key}fuel{/} in the bottom slot.{/on_key}
+tagged.food = {icons:base:food_full value.hunger/2}
+tagged.armor = {#5555ff}+{value.points} Armor{/}{if:value.toughness>0}\n{#5555ff}+{value.toughness} Armor Toughness{/}{/if}
+tagged.fuel = Smelts {value/200} items
 block.base.bed = Bed
 block.base.bed.tooltip = Sleep through the night and wake up here after dying.
 block.base.chest = Chest
@@ -89,7 +92,6 @@ block.base.coal_block = Block of Coal
 block.base.wool = Wool
 item.base.stick = Stick
 item.base.coal = Coal
-item.base.coal.tooltip = Fuel: smelts {color:key}8{/} items.
 item.base.iron_ingot = Iron Ingot
 item.base.raw_iron = Raw Iron
 item.base.raw_gold = Raw Gold

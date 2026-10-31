@@ -90,13 +90,16 @@ pub async fn tooltips(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 furnace 1").await?;
     t.op("put me 1 coal 5").await?;
+    t.op("put me 2 diamond_sword 1").await?;
+    t.op("put me 3 bread 1").await?;
+    t.op("put me 4 diamond_chestplate 1").await?;
     t.press("core:inventory");
     t.screen("core:menu").await?;
     t.c().cursor(0.02, 0.02);
     t.frames(4).await?;
     let plain = t.grab().await?;
     let (w, h) = (t.state().window[0], t.state().window[1]);
-    for (slot, name) in [(36, "furnace"), (37, "coal")] {
+    for (slot, name) in [(36, "furnace"), (37, "coal"), (38, "sword"), (39, "bread"), (40, "chestplate")] {
         let Some([x, y, sw, sh]) = t.c().ui_rect(&format!("slot:{slot}")) else {
             t.fail(format!("no slot {slot}"));
             continue;
@@ -110,6 +113,16 @@ pub async fn tooltips(t: T) -> R {
         // color, so only part of the pixels change.
         let v = changed(&plain, &now, w, h, cx + 0.02, cy - 0.02, cx + 0.15, cy + 0.05);
         t.probe(&format!("{name} tooltip drawn"), v, v > 0.1);
+        // Lines by what an item is (`tagged.<component>`), numbers from the item itself.
+        let line = |c: probe::C| match name {
+            "sword" => c[1] > 140 && c[0] < 60 && c[2] < 60,
+            "chestplate" => c[2] > 200 && c[0] < 130 && c[1] < 130,
+            _ => c[0] > 150 && c[1] > 70 && c[1] < 150 && c[2] < 90,
+        };
+        if matches!(name, "sword" | "bread" | "chestplate") {
+            let share = t.shot(&format!("{name}_lines")).await?.share(cx + 0.015, cy - 0.06, cx + 0.3, cy + 0.12, line);
+            t.probe(&format!("{name}'s line from its tag"), share, share > 0.0005);
+        }
         // Another mod's line under coal's own (`item.base.coal.tooltip.testmod`), in red.
         if name == "coal" {
             let red = t.shot("coal_lines").await?.share(cx + 0.02, cy - 0.05, cx + 0.3, cy + 0.12, probe::red);

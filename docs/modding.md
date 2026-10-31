@@ -133,7 +133,7 @@ Textures can also be [animated, glow and have overlays](textures.md), or [be con
 
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
-Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`, more in the [tooltips guide](tooltips.md).\
+Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`, more in the [localization guide](localization.md).\
 If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.\
 The Mods screen reads your mod's page from there too: `mod.mymod.name`, `mod.mymod.description` (as long as you like, with pictures), `mod.mymod.authors` and `mod.mymod.url`, and its icon is `assets/textures/gui/icon.png`.
 
@@ -416,7 +416,7 @@ You can contact me on Discord: `@vortex_so`
 ## Guides for other systems
 - [Textures](textures.md): animation, glow, tinted overlays
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)
-- [Tooltips](tooltips.md): item tooltips, rich text and effects, adding them from other mods and packs
+- [Localization](localization.md): all text, item tooltips, rich text and effects, icons and meters, lines by tag, adding them from other mods and packs
 - [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
 - [Sky](sky.md): suns, moons, stars and skyboxes in any dimension, changing or removing the ones there
 - [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor

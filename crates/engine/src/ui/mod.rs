@@ -12,6 +12,7 @@ pub mod lang;
 pub mod render;
 pub mod text;
 pub mod look;
+pub mod meter;
 
 use std::rc::Rc;
 
@@ -207,7 +208,7 @@ pub enum Kind {
     Progress { class: String, bind: FloatBind, value: f32, dir: u32 },
     /// `count` icons showing `value` in half steps (hearts): textures `gui/<class>_full`, `_half`, `_empty`.
     /// `shake`: at 4 or less they jump about, like hearts near the end.
-    Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool, shake: bool },
+    Icons { class: String, count: u32, bind: FloatBind, value: f32, dir: u32, shake: bool },
     /// Single-line text field; `caret` is a char index.
     Input { value: String, caret: usize, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
     Slider { value: f32, bind: FloatBind, on_change: Rc<dyn Fn(&mut Ctx, f32)> },
@@ -551,6 +552,7 @@ impl Ui {
         } else {
             match &self.nodes[id].kind {
                 Kind::Item { .. } => [16.0, 16.0],
+                Kind::Icons { count, dir, .. } if matches!(*dir, weft_abi::ui_dir::UP | weft_abi::ui_dir::DOWN) => [9.0, *count as f32 * 8.0 + 1.0],
                 Kind::Icons { count, .. } => [*count as f32 * 8.0 + 1.0, 9.0],
                 Kind::Slider { .. } => [100.0, 12.0],
                 Kind::Input { .. } => [120.0, 18.0],

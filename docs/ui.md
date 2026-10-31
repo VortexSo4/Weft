@@ -42,7 +42,7 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | `player_inventory(title)` | the player's inventory and hotbar in a menu |
 | `progress_bind`, `icons` | bars and icon rows driven by live values |
 
-Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](localization.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
 
 The engine's own pause, death and settings screens are built from exactly these parts, so a screen that replaces one can look and work the same.
 

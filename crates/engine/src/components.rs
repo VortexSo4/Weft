@@ -206,6 +206,87 @@ impl Components {
     }
 }
 
+/// Size and alignment of a schema's value (`repr(C)`), for what can be read in text.
+fn layout_of(schema: &str) -> Option<(usize, usize)> {
+    let s = schema.trim();
+    match s {
+        "u8" | "i8" | "bool" => return Some((1, 1)),
+        "u16" | "i16" => return Some((2, 2)),
+        "u32" | "i32" | "f32" => return Some((4, 4)),
+        "u64" | "i64" | "f64" => return Some((8, 8)),
+        _ => {}
+    }
+    if let Some((t, n)) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')).and_then(|r| r.rsplit_once(';')) {
+        let (size, align) = layout_of(t)?;
+        return Some((size * n.trim().parse::<usize>().ok()?, align));
+    }
+    let (mut at, mut most) = (0usize, 1usize);
+    for (_, t) in schema_fields(s)? {
+        let (size, align) = layout_of(t)?;
+        at = at.next_multiple_of(align) + size;
+        most = most.max(align);
+    }
+    Some((at.next_multiple_of(most), most))
+}
+
+/// The fields of a `{name:type,..}` schema.
+fn schema_fields(schema: &str) -> Option<Vec<(&str, &str)>> {
+    let inner = schema.trim().strip_prefix('{')?.strip_suffix('}')?;
+    let (mut out, mut depth, mut start) = (Vec::new(), 0, 0);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].split_once(':')?);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < inner.len() {
+        out.push(inner[start..].split_once(':')?);
+    }
+    Some(out)
+}
+
+/// A number in a value by its schema: the field named, or its first number (a lone number's self).
+pub fn number_in(schema: &str, bytes: &[u8], field: Option<&str>) -> Option<f32> {
+    let s = schema.trim();
+    if let Some(fields) = schema_fields(s) {
+        let mut at = 0usize;
+        for (name, t) in fields {
+            let (size, align) = layout_of(t)?;
+            at = at.next_multiple_of(align);
+            let wanted = field.map_or(true, |f| f == name.trim());
+            if wanted {
+                if let Some(n) = number_in(t, bytes.get(at..at + size)?, None) {
+                    return Some(n);
+                }
+            }
+            at += size;
+        }
+        return None;
+    }
+    if let Some(t) = s.strip_prefix('[').and_then(|r| r.split(';').next()) {
+        return number_in(t, bytes, None);
+    }
+    let b = |n: usize| bytes.get(..n);
+    Some(match s {
+        "u8" | "bool" => *b(1)?.first()? as f32,
+        "i8" => *b(1)?.first()? as i8 as f32,
+        "u16" => u16::from_le_bytes(b(2)?.try_into().ok()?) as f32,
+        "i16" => i16::from_le_bytes(b(2)?.try_into().ok()?) as f32,
+        "u32" => u32::from_le_bytes(b(4)?.try_into().ok()?) as f32,
+        "i32" => i32::from_le_bytes(b(4)?.try_into().ok()?) as f32,
+        "f32" => f32::from_le_bytes(b(4)?.try_into().ok()?),
+        "u64" => u64::from_le_bytes(b(8)?.try_into().ok()?) as f32,
+        "i64" => i64::from_le_bytes(b(8)?.try_into().ok()?) as f32,
+        "f64" => f64::from_le_bytes(b(8)?.try_into().ok()?) as f32,
+        _ => return None,
+    })
+}
+
 /// Collects schemas and values during freeze and turns them into `Components`.
 pub struct Builder {
     /// Name -> (schema, who declared it first).
@@ -417,6 +498,27 @@ pub fn matches(pattern: &str, name: &str) -> bool {
     match pattern.split_once('*') {
         None => pattern == name,
         Some((pre, post)) => name.len() >= pre.len() + post.len() && name.starts_with(pre) && name.ends_with(post),
+    }
+}
+
+#[cfg(test)]
+mod numbers {
+    use super::number_in;
+
+    #[test]
+    fn reads_by_schema() {
+        let mut food = 5u32.to_le_bytes().to_vec();
+        food.extend(7.5f32.to_le_bytes());
+        let schema = "{hunger:u32,saturation:f32}";
+        assert_eq!(number_in(schema, &food, Some("saturation")), Some(7.5));
+        assert_eq!(number_in(schema, &food, Some("hunger")), Some(5.0));
+        assert_eq!(number_in(schema, &food, None), Some(5.0), "the first number");
+        assert_eq!(number_in(schema, &food, Some("nope")), None);
+        assert_eq!(number_in("f32", &1.5f32.to_le_bytes(), None), Some(1.5));
+        // Padding before a wider field.
+        let mut v = vec![9u8, 0, 0, 0];
+        v.extend(2.0f32.to_le_bytes());
+        assert_eq!(number_in("{a:u8,b:f32}", &v, Some("b")), Some(2.0));
     }
 }
 
