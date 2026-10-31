@@ -27,6 +27,7 @@ A snippet is a file `shaders/<kind>/<name>.wgsl` in your mod, holding one functi
 | entities | `shaders/entity/` | `fn shade(p: EntityPixel) -> vec4<f32>` | `r.entity(..).shader("name")` |
 | blocks | `shaders/block/` | `fn shade(p: BlockPixel) -> vec4<f32>` | `r.block(..).shader("name")` |
 | particles | `shaders/particle/` | `fn shade(p: ParticleFrag) -> vec4<f32>` | `r.particle(..).shader("name")` |
+| sky | `shaders/sky/` | `fn shade(p: SkyPixel) -> vec4<f32>` | `r.sky_body(..).shader("name")`, see the [sky guide](sky.md#shaders) |
 | screen effects | `shaders/post/` | `fn apply(p: PostPixel) -> vec4<f32>` | `client.post_effect("mymod:name", strength)` |
 
 The file name is the snippet's name, so `shaders/fx/glitch.wgsl` in `testmod` is `testmod:glitch`. Whatever a function can see is in the struct it takes, and all of them carry `time`, the seconds since the game started. A resource pack can replace a snippet the way it replaces a texture, and a mistake in one shows up in the log with the file and the error.
@@ -129,12 +130,13 @@ Snippets add to the engine's shaders, a shader pack replaces them. It is a folde
 | `model.wgsl` | mobs and the player's model |
 | `entity.wgsl` | the first-person hand and held items |
 | `particle.wgsl` | particles |
+| `sky.wgsl` | the sky, what is in it, and the overlay from inside a liquid |
 | `post.wgsl` | screen effects |
 | `ui.wgsl` | all screens and text |
 
 A file replaces its shader completely and the ones a pack doesn't have stay as they were, so the easiest start is a copy of the original from `crates/engine/assets/shaders/`. A replacement writes only functions (and its own private structs like `VOut`): the buffer structs, the bindings, the constants and the shared helpers of `common.wgsl` come from the engine's prelude (`crates/engine/src/gpu_layout.rs`), so a pack can't get them wrong and keeps working when they change. It has to keep the entry points. If it doesn't compile, the log says why and the built-in shader is used instead, so a broken pack can't leave anyone with a black screen. Mods' snippets keep working inside a pack's shaders, and an optional `pack.cfg` (`name = ...`, `description = ...`) names the pack in the list.
 
 ### Sun shadows
-The engine draws no sun, so a pack that wants shadows gets the two things it needs from the world shader's prelude: `scene.sun` (xyz points toward the sun, w is how high it stands, 0 at night and in dimensions without sky) and `solid_at(p: vec3<i32>) -> bool`, which says whether the block at `p` casts a shadow (anything that dims sky light, liquids aside). It knows the blocks about 112 blocks around the camera and answers false beyond them, so march from the pixel toward `scene.sun.xyz` through block cells and stop at the first solid one. The engine only keeps these blocks on the GPU while the chosen pack's `world.wgsl` calls `solid_at`, so packs without shadows pay nothing.
+A pack that wants shadows gets the two things it needs from the world shader's prelude: `scene.sun` (xyz points toward the sun, w is how high it stands, 0 at night and in dimensions without sky) and `solid_at(p: vec3<i32>) -> bool`, which says whether the block at `p` casts a shadow (anything that dims sky light, liquids aside). It knows the blocks about 112 blocks around the camera and answers false beyond them, so march from the pixel toward `scene.sun.xyz` through block cells and stop at the first solid one. The engine only keeps these blocks on the GPU while the chosen pack's `world.wgsl` calls `solid_at`, so packs without shadows pay nothing.
 
 Textures and models stay with resource packs, see the [resource packs guide](resourcepacks.md).

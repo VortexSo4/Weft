@@ -229,18 +229,35 @@ impl Dim {
         }
         let creative = self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
-            let hit = self.look_ray(c, player, 5.0, false).filter(|h| h.frame == 0)?;
+            let reach = self.attribute(c, player, super::extend::BLOCK_REACH, false);
+            let hit = self.look_ray(c, player, reach, false).filter(|h| h.frame == 0)?;
             let replaceable = |s: u32| c.states[s as usize].flags & bf::REPLACEABLE != 0;
             let target = if replaceable(hit.state) { hit.block } else { hit.block + DIRS[hit.face as usize] };
-            if !self.get(target).is_some_and(replaceable) {
+            let old = self.get(target).filter(|&s| replaceable(s))?;
+            let source = c.liquids[l as usize].first_state;
+            // Only into what would become a source, and with the same say as placing a block.
+            if old == source {
                 return None;
             }
-            self.spread_to(c, target, c.liquids[l as usize].first_state, false, l);
+            let mut q = weft_abi::Query { entity: player, pos: target.to_array(), state: source, item: held.item, ..weft_abi::Query::DEFAULT };
+            if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) {
+                return None;
+            }
+            if c.states[old as usize].liquid.is_some() {
+                self.set(c, target, source);
+            } else {
+                self.spread_to(c, target, source, false, l);
+            }
             return Some(if creative || empty == 0 { held } else { ItemStack::new(empty, 1) });
         }
-        let hit = self.look_ray(c, player, 5.0, true).filter(|h| h.frame == 0)?;
+        let reach = self.attribute(c, player, super::extend::BLOCK_REACH, false);
+        let hit = self.look_ray(c, player, reach, true).filter(|h| h.frame == 0)?;
         let f = decode(c, hit.state).filter(|f| f.source)?;
         let filled = *c.containers.get(&(held.item, f.id))?;
+        let mut q = weft_abi::Query { entity: player, pos: hit.block.to_array(), state: hit.state, item: held.item, ..weft_abi::Query::DEFAULT };
+        if !self.ask(c, weft_abi::question::BREAK_BLOCK, &mut q) {
+            return None;
+        }
         self.set(c, hit.block, AIR);
         if creative {
             return Some(held);

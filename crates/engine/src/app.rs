@@ -76,8 +76,6 @@ pub enum Request {
     Join(String),
     Respawn,
     SendChat(String),
-    /// Re-read packs and assets, as the reload key does.
-    ReloadAssets,
 }
 
 /// What UI actions and bindings can see and change.
@@ -188,6 +186,9 @@ pub(crate) struct Running {
     screens: Vec<(Box<dyn Screen>, Ui)>,
     hud: Hud,
     game: Option<Game>,
+    /// The game just left, kept to the end of the frame: a mod's view of the client that asked to
+    /// leave still points into it.
+    retired: Option<Game>,
     last: Instant,
     shot_pending: bool,
     fps: f32,
@@ -398,6 +399,7 @@ impl App {
                 h
             },
             game: None,
+            retired: None,
             last: Instant::now(),
             shot_pending: false,
             fps: 0.0,
@@ -618,6 +620,7 @@ impl Running {
                 s.stop();
                 net::p2p::stop_hosting();
             }
+            self.retired = Some(g);
         }
         self.set_capture(false);
     }
@@ -656,7 +659,6 @@ impl Running {
                     Some(s) => self.open(s),
                     None => log::warn!("no screen {name}"),
                 },
-                Request::ReloadAssets => self.reload_requested = true,
                 Request::Rebind(action, key) => {
                     self.input.rebind(&action, key);
                     self.settings.set_bind(&action, key);
@@ -758,120 +760,9 @@ impl Running {
             ui.hovered = hovered;
             self.quads_dirty = true;
         }
-        let mut actions: Vec<crate::ui::Action> = Vec::new();
-        let mut slider: Option<(std::rc::Rc<dyn Fn(&mut Ctx, f32)>, f32)> = None;
-        let mut text_changed: Option<(std::rc::Rc<dyn Fn(&mut Ctx, &str)>, String)> = None;
         let menu_screen = self.screens.last().is_some_and(|(s, _)| s.shows_menu());
         if menu_screen {
-            let Some((_, ui)) = self.screens.last_mut() else { return };
-            let slot = hovered.and_then(|h| match ui.nodes[h].kind {
-                Kind::Custom { tag: crate::client::modui::TAG_SLOT, data } => Some(data as u32),
-                _ => None,
-            });
-            if let Some(g) = &mut self.game {
-                let shift = self.input.held_key(Key::Code(KeyCode::ShiftLeft)) || self.input.held_key(Key::Code(KeyCode::ShiftRight));
-                // Pressing with a stack on the cursor starts a drag; releasing over one slot is
-                // a plain click, over several it spreads the stack.
-                let holding = g.client.menu.as_ref().is_some_and(|m| !m.cursor.is_empty());
-                use crate::server::menu::{GATHER, HOTBAR_SWAP};
-                for button in [0u8, 1] {
-                    if self.input.pressed_button(button) {
-                        let inside = ui.nodes.iter().any(|n| matches!(n.kind, Kind::Container { class: Some(_) }) && n.rect.contains(cursor) && n.rect.w < ui.size.x);
-                        // Vanilla: the same slot and button again within a quarter second, any other
-                        // click in between breaks it.
-                        let double = button == 0 && g.client.last_click.is_some_and(|(l, b, t)| Some(l) == slot && b == button && t.elapsed().as_secs_f32() < 0.25);
-                        g.client.last_click = slot.map(|s| (s, button, Instant::now()));
-                        if shift && button == 0 {
-                            g.client.sweep.extend(slot);
-                        }
-                        match slot {
-                            // Double click: the rest of the stack just picked up joins it (the
-                            // server knows what is on the cursor even before we do).
-                            Some(s) if double && !shift => {
-                                g.client.send(net::ToServer::Click { slot: s, button: GATHER, shift: false });
-                                g.client.last_click = None;
-                            }
-                            Some(s) if holding && !shift && g.client.drag.is_none() => g.client.drag = Some((button, vec![s])),
-                            Some(s) => g.client.send(net::ToServer::Click { slot: s, button, shift }),
-                            None if !inside => g.client.send(net::ToServer::Click { slot: u32::MAX, button, shift: false }),
-                            None => {}
-                        }
-                    }
-                }
-                // Shift with the left button held: every slot swept over is shift-clicked.
-                if shift && self.input.held_button(0) && !holding {
-                    if let Some(s) = slot.filter(|s| !g.client.sweep.contains(s)) {
-                        g.client.sweep.push(s);
-                        g.client.send(net::ToServer::Click { slot: s, button: 0, shift: true });
-                    }
-                } else if !self.input.held_button(0) {
-                    g.client.sweep.clear();
-                }
-                // Number keys over a slot swap it with that hotbar slot.
-                if let Some(s) = slot {
-                    for (n, action) in crate::input::HOTBAR.into_iter().enumerate() {
-                        if self.input.pressed(action) {
-                            g.client.send(net::ToServer::Click { slot: s, button: HOTBAR_SWAP + n as u8, shift: false });
-                        }
-                    }
-                }
-                if let Some((button, slots)) = &mut g.client.drag {
-                    if self.input.held_button(*button) {
-                        if let Some(s) = slot.filter(|s| !slots.contains(s)) {
-                            slots.push(s);
-                            self.quads_dirty = true;
-                        }
-                    } else {
-                        let (button, slots) = g.client.drag.take().unwrap();
-                        if slots.len() == 1 {
-                            g.client.send(net::ToServer::Click { slot: slots[0], button, shift: false });
-                        } else {
-                            g.client.send(net::ToServer::Drag { slots, button });
-                        }
-                        self.quads_dirty = true;
-                    }
-                }
-                // Creative entries put a full stack on the cursor.
-                let creative_item = hovered.and_then(|h| match ui.nodes[h].kind {
-                    Kind::Custom { tag: crate::client::modui::TAG_CREATIVE, data } => Some(data as u32),
-                    _ => None,
-                });
-                if let Some(item) = creative_item {
-                    for button in [0u8, 1] {
-                        if self.input.pressed_button(button) {
-                            g.client.send(net::ToServer::CreativeTake { item, button });
-                        }
-                    }
-                }
-                // Tooltip with the hovered item's name.
-                if let Some(h) = hovered {
-                    if let Kind::Custom { tag, data } = ui.nodes[h].kind {
-                        let stack = if tag == crate::client::modui::TAG_CREATIVE {
-                            weft_abi::ItemStack::new(data as u32, 1)
-                        } else {
-                            g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
-                        };
-                        // An empty slot shows its group's hint, if it has one.
-                        let hint = || {
-                            let c = content();
-                            let def = c.game.menus.get(g.client.menu.as_ref()?.kind as usize)?;
-                            let key = def.group_of(&c.game.player_layout, data as u32)?.0.tooltip.clone()?;
-                            Some(crate::ui::text::rich(self.lang.get(&key), &self.lang, Some(&self.input)))
-                        };
-                        let tip = if !stack.is_empty() {
-                            Some(crate::hud::item_tooltip(&self.lang, &self.input, stack))
-                        } else if tag == crate::client::modui::TAG_SLOT {
-                            hint()
-                        } else {
-                            None
-                        };
-                        if ui.nodes[h].tooltip != tip {
-                            ui.nodes[h].tooltip = tip;
-                            self.quads_dirty = true;
-                        }
-                    }
-                }
-            }
+            self.menu_input(hovered, cursor);
         }
         let Some((_, ui)) = self.screens.last_mut() else { return };
         if self.input.pressed_button(0) && menu_screen {
@@ -882,6 +773,130 @@ impl Running {
                 return;
             }
         }
+        let callbacks = self.widgets_input(hovered, cursor);
+        self.recipe_keys(requests);
+        self.run_callbacks(callbacks, requests);
+    }
+
+    /// Slots: clicks, drags, sweeps, number keys, tooltips.
+    fn menu_input(&mut self, hovered: Option<usize>, cursor: Vec2) {
+        let Some((_, ui)) = self.screens.last_mut() else { return };
+        let slot = hovered.and_then(|h| match ui.nodes[h].kind {
+            Kind::Custom { tag: crate::client::modui::TAG_SLOT, data } => Some(data as u32),
+            _ => None,
+        });
+        if let Some(g) = &mut self.game {
+            let shift = self.input.held_key(Key::Code(KeyCode::ShiftLeft)) || self.input.held_key(Key::Code(KeyCode::ShiftRight));
+            // Pressing with a stack on the cursor starts a drag; releasing over one slot is
+            // a plain click, over several it spreads the stack.
+            let holding = g.client.menu.as_ref().is_some_and(|m| !m.cursor.is_empty());
+            use crate::server::menu::{GATHER, HOTBAR_SWAP};
+            for button in [0u8, 1] {
+                if self.input.pressed_button(button) {
+                    let inside = ui.nodes.iter().any(|n| matches!(n.kind, Kind::Container { class: Some(_) }) && n.rect.contains(cursor) && n.rect.w < ui.size.x);
+                    // Vanilla: the same slot and button again within a quarter second, any other
+                    // click in between breaks it.
+                    let double = button == 0 && g.client.last_click.is_some_and(|(l, b, t)| Some(l) == slot && b == button && t.elapsed().as_secs_f32() < 0.25);
+                    g.client.last_click = slot.map(|s| (s, button, Instant::now()));
+                    if shift && button == 0 {
+                        g.client.sweep.extend(slot);
+                    }
+                    match slot {
+                        // Double click: the rest of the stack just picked up joins it (the
+                        // server knows what is on the cursor even before we do).
+                        Some(s) if double && !shift => {
+                            g.client.send(net::ToServer::Click { slot: s, button: GATHER, shift: false });
+                            g.client.last_click = None;
+                        }
+                        Some(s) if holding && !shift && g.client.drag.is_none() => g.client.drag = Some((button, vec![s])),
+                        Some(s) => g.client.send(net::ToServer::Click { slot: s, button, shift }),
+                        None if !inside => g.client.send(net::ToServer::Click { slot: u32::MAX, button, shift: false }),
+                        None => {}
+                    }
+                }
+            }
+            // Shift with the left button held: every slot swept over is shift-clicked.
+            if shift && self.input.held_button(0) && !holding {
+                if let Some(s) = slot.filter(|s| !g.client.sweep.contains(s)) {
+                    g.client.sweep.push(s);
+                    g.client.send(net::ToServer::Click { slot: s, button: 0, shift: true });
+                }
+            } else if !self.input.held_button(0) {
+                g.client.sweep.clear();
+            }
+            // Number keys over a slot swap it with that hotbar slot, unless typing a search.
+            if let Some(s) = slot.filter(|_| !ui.focused.is_some_and(|f| matches!(ui.nodes[f].kind, Kind::Input { .. }))) {
+                for (n, action) in crate::input::HOTBAR.into_iter().enumerate() {
+                    if self.input.pressed(action) {
+                        g.client.send(net::ToServer::Click { slot: s, button: HOTBAR_SWAP + n as u8, shift: false });
+                    }
+                }
+            }
+            if let Some((button, slots)) = &mut g.client.drag {
+                if self.input.held_button(*button) {
+                    if let Some(s) = slot.filter(|s| !slots.contains(s)) {
+                        slots.push(s);
+                        self.quads_dirty = true;
+                    }
+                } else {
+                    let (button, slots) = g.client.drag.take().unwrap();
+                    if slots.len() == 1 {
+                        g.client.send(net::ToServer::Click { slot: slots[0], button, shift: false });
+                    } else {
+                        g.client.send(net::ToServer::Drag { slots, button });
+                    }
+                    self.quads_dirty = true;
+                }
+            }
+            // Creative entries put a full stack on the cursor.
+            let creative_item = hovered.and_then(|h| match ui.nodes[h].kind {
+                Kind::Custom { tag: crate::client::modui::TAG_CREATIVE, data } => Some(data as u32),
+                _ => None,
+            });
+            if let Some(item) = creative_item {
+                for button in [0u8, 1] {
+                    if self.input.pressed_button(button) {
+                        g.client.send(net::ToServer::CreativeTake { item, button });
+                    }
+                }
+            }
+            // Tooltip with the hovered item's name.
+            if let Some(h) = hovered {
+                if let Kind::Custom { tag, data } = ui.nodes[h].kind {
+                    let stack = if tag == crate::client::modui::TAG_CREATIVE {
+                        weft_abi::ItemStack::new(data as u32, 1)
+                    } else {
+                        g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
+                    };
+                    // An empty slot shows its group's hint, if it has one.
+                    let hint = || {
+                        let c = content();
+                        let def = c.game.menus.get(g.client.menu.as_ref()?.kind as usize)?;
+                        let key = def.group_of(&c.game.player_layout, data as u32)?.0.tooltip.clone()?;
+                        Some(crate::ui::text::rich(self.lang.get(&key), &self.lang, Some(&self.input)))
+                    };
+                    let tip = if !stack.is_empty() {
+                        Some(crate::hud::item_tooltip(&self.lang, &self.input, stack))
+                    } else if tag == crate::client::modui::TAG_SLOT {
+                        hint()
+                    } else {
+                        None
+                    };
+                    if ui.nodes[h].tooltip != tip {
+                        ui.nodes[h].tooltip = tip;
+                        self.quads_dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Buttons, sliders and text fields under the mouse. What they do runs once `ui` is let go.
+    fn widgets_input(&mut self, hovered: Option<usize>, cursor: Vec2) -> UiCallbacks {
+        let mut actions: Vec<crate::ui::Action> = Vec::new();
+        let mut slider: Option<(std::rc::Rc<dyn Fn(&mut Ctx, f32)>, f32)> = None;
+        let mut text_changed: Option<(std::rc::Rc<dyn Fn(&mut Ctx, &str)>, String)> = None;
+        let Some((_, ui)) = self.screens.last_mut() else { return UiCallbacks::default() };
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
             ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
@@ -935,7 +950,12 @@ impl Running {
                 }
             }
         }
-        // Recipes of (or uses for) the item under the cursor, in any screen.
+        UiCallbacks { actions, slider, text_changed }
+    }
+
+    /// Recipes of (or uses for) the item under the cursor, in any screen.
+    fn recipe_keys(&mut self, requests: &mut Vec<Request>) {
+        let Some((_, ui)) = self.screens.last_mut() else { return };
         let typing = ui.focused.is_some_and(|f| matches!(ui.nodes[f].kind, Kind::Input { .. }));
         for (action, uses) in [("core:recipes", false), ("core:uses", true)] {
             if !typing && self.input.pressed(action) {
@@ -944,6 +964,10 @@ impl Running {
                 }
             }
         }
+    }
+
+    fn run_callbacks(&mut self, callbacks: UiCallbacks, requests: &mut Vec<Request>) {
+        let UiCallbacks { actions, slider, text_changed } = callbacks;
         let ran = !actions.is_empty() || slider.is_some() || text_changed.is_some();
         let mut ctx = Ctx {
             settings: &mut self.settings,
@@ -1188,6 +1212,11 @@ impl Running {
                         }
                         relayout |= text::refresh(&mut t.spans, &test);
                     }
+                    // Jumping about needs drawing again, whatever the value does.
+                    Kind::Icons { bind, value, shake: true, .. } if (0.0..=4.0).contains(value) => {
+                        *value = bind(&ctx);
+                        redraw = true;
+                    }
                     Kind::Progress { bind, value, .. } | Kind::Icons { bind, value, .. } => {
                         let v = bind(&ctx);
                         if (v - *value).abs() > 1e-4 {
@@ -1347,13 +1376,77 @@ impl ApplicationHandler for App {
     }
 }
 
+/// What a widget does, run once the screen's `Ui` is let go.
+#[derive(Default)]
+struct UiCallbacks {
+    actions: Vec<crate::ui::Action>,
+    slider: Option<(std::rc::Rc<dyn Fn(&mut Ctx, f32)>, f32)>,
+    text_changed: Option<(std::rc::Rc<dyn Fn(&mut Ctx, &str)>, String)>,
+}
+
 /// One frame. Returns true when the app should quit.
 fn frame(r: &mut Running, opts: &Options) -> bool {
+    r.retired = None;
     let now = Instant::now();
     let dt = (now - r.last).as_secs_f64();
     r.last = now;
     let scale = r.gui_scale();
+    start_frame(r, opts, dt);
+    let mut requests = Vec::new();
+    if !screen_keys_first(r, &mut requests) && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
+        escape(r, &mut requests);
+    }
+    f3_keys(r);
+    toggle_keys(r);
+    if r.packs_pending && !r.screens.iter().any(|(s, _)| matches!(s.name(), "core:resource_packs" | "core:shader_packs")) {
+        r.packs_pending = false;
+        r.apply_settings();
+    }
+    if r.input.pressed("core:reload") || std::mem::take(&mut r.reload_requested) {
+        reload_assets(r, opts);
+    }
+    window_keys(r);
+    r.screen_input(scale, &mut requests);
+    r.handle(requests);
+    update_game(r, dt, now);
+    r.entity_ticks(dt as f32);
+    r.client_packets();
+    play_sounds(r);
+    client_events(r);
+    world_keys(r);
+    handle_disconnect(r);
+    end_input(r);
+    refresh_hud(r);
+    r.poll_bindings();
+    let text_unit = layout_uis(r, scale);
+    let t = Instant::now();
+    r.prof[1] = (t.duration_since(now).as_secs_f32() * 1000.0 - r.prof[1]).max(0.0);
+    let Some(info) = r.gpu.begin_frame() else { return false };
+    let t2 = Instant::now();
+    r.prof[2] = t2.duration_since(t).as_secs_f32() * 1000.0;
+    if (r.depth.1, r.depth.2) != (info.width, info.height) {
+        r.gpu.destroy_texture(r.depth.0);
+        r.depth = make_depth(&mut *r.gpu, info.width, info.height);
+    }
+    if r.quads_dirty {
+        build_ui_quads(r, scale);
+    }
+    draw_overlays(r, &info, scale, text_unit);
+    record_passes(r, &info, scale);
+    let capture_now = r.shot_pending;
+    let t3 = Instant::now();
+    r.prof[3] = t3.duration_since(t2).as_secs_f32() * 1000.0;
+    r.gpu.end_frame(&r.list);
+    r.prof[4] = t3.elapsed().as_secs_f32() * 1000.0;
+    report_frame(r, dt);
+    if capture_now {
+        save_screenshot(r);
+    }
+    count_fps(r);
+    false
+}
 
+fn start_frame(r: &mut Running, opts: &Options, dt: f64) {
     r.frame_no += 1;
     if crate::config::generation() != r.config_seen {
         r.config_seen = crate::config::generation();
@@ -1370,9 +1463,11 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         // The window may not have focus while a mod drives it.
         r.input.captured = true;
     }
-    let mut requests = Vec::new();
-    // Keys the top screen wants first (chat: completion, history; controls: the key to bind).
-    // Escape still closes it below unless it took Escape itself.
+}
+
+/// Keys the top screen wants first (chat: completion, history; controls: the key to bind).
+/// Escape still closes it after this, unless it took Escape itself: returns whether it did.
+fn screen_keys_first(r: &mut Running, requests: &mut Vec<Request>) -> bool {
     let mut escape_taken = false;
     if let Some((s, ui)) = r.screens.last_mut().filter(|(s, _)| s.keys_first()) {
         for k in r.input.pressed_list() {
@@ -1380,7 +1475,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 settings: &mut r.settings,
                 client: r.game.as_mut().map(|g| &mut g.client),
                 input: &r.input,
-                requests: &mut requests,
+                requests: &mut *requests,
                 stats: &r.stats,
                 debug: r.debug,
                 top: Some(Top { screen: None, ui: &mut *ui }),
@@ -1394,7 +1489,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 settings: &mut r.settings,
                 client: r.game.as_mut().map(|g| &mut g.client),
                 input: &r.input,
-                requests: &mut requests,
+                requests: &mut *requests,
                 stats: &r.stats,
                 debug: r.debug,
                 top: Some(Top { screen: None, ui: &mut *ui }),
@@ -1405,51 +1500,62 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.quads_dirty = true;
         }
     }
-    if !escape_taken && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
-        if r.screens.last().is_some_and(|(s, _)| !s.escape_closes()) {
-        } else if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
-            if r.screens.last().is_some_and(|(s, _)| s.shows_menu()) {
-                if let Some(g) = &mut r.game {
-                    g.client.close_menu();
-                }
+    escape_taken
+}
+
+fn escape(r: &mut Running, requests: &mut Vec<Request>) {
+    if r.screens.last().is_some_and(|(s, _)| !s.escape_closes()) {
+    } else if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
+        if r.screens.last().is_some_and(|(s, _)| s.shows_menu()) {
+            if let Some(g) = &mut r.game {
+                g.client.close_menu();
             }
-            requests.push(Request::Close);
-        } else if r.game.is_some() && r.screens.is_empty() {
-            r.open(screens::engine("core:pause"));
         }
+        requests.push(Request::Close);
+    } else if r.game.is_some() && r.screens.is_empty() {
+        r.open(screens::engine("core:pause"));
     }
-    // F3 alone toggles the overlay on release; F3 + digit toggles one group instead.
+}
+
+type F3Action = fn(&mut Running);
+
+/// What F3 plus a key does. A new combination is a line here.
+const F3_COMBOS: &[(KeyCode, F3Action)] = &[
+    (KeyCode::KeyT, |r| r.reload_requested = true),
+    // Through the command, so permissions still apply.
+    (KeyCode::F4, |r| {
+        if let Some(g) = &mut r.game {
+            let all = crate::world::GameMode::ALL;
+            let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
+            g.client.send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
+        }
+    }),
+    (KeyCode::F6, |r| {
+        if r.screens.is_empty() {
+            r.open(screens::engine("core:debug_options"));
+        }
+    }),
+    (KeyCode::KeyG, |r| toggle_gizmo(r, "cubes")),
+    (KeyCode::KeyB, |r| toggle_gizmo(r, "hitboxes")),
+];
+
+fn toggle_gizmo(r: &mut Running, group: &str) {
+    if let Some(g) = &mut r.game {
+        g.client.toggle_gizmo(group);
+    }
+}
+
+/// F3 alone toggles the overlay on release; F3 + a key does what `F3_COMBOS` says, F3 + a digit
+/// toggles one group instead.
+fn f3_keys(r: &mut Running) {
     let f3 = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k.key));
     if r.input.pressed("core:debug") {
         r.f3_combo = Some(false);
     }
-    let mut f3_reload = false;
     if f3 {
-        if r.input.pressed_key(Key::Code(KeyCode::KeyT)) {
-            f3_reload = true;
-            r.f3_combo = Some(true);
-        }
-        // F3+F4: next game mode, through the command so permissions still apply.
-        if r.input.pressed_key(Key::Code(KeyCode::F4)) {
-            if let Some(g) = &mut r.game {
-                let all = crate::world::GameMode::ALL;
-                let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
-                g.client.send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
-            }
-            r.f3_combo = Some(true);
-        }
-        // F3+F6: which lines the overlay has.
-        if r.input.pressed_key(Key::Code(KeyCode::F6)) {
-            if r.screens.is_empty() {
-                r.open(screens::engine("core:debug_options"));
-            }
-            r.f3_combo = Some(true);
-        }
-        for (key, group) in [(KeyCode::KeyG, "cubes"), (KeyCode::KeyB, "hitboxes")] {
-            if r.input.pressed_key(Key::Code(key)) {
-                if let Some(g) = &mut r.game {
-                    g.client.toggle_gizmo(group);
-                }
+        for (key, action) in F3_COMBOS {
+            if r.input.pressed_key(Key::Code(*key)) {
+                action(r);
                 r.f3_combo = Some(true);
             }
         }
@@ -1469,6 +1575,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.hud.invalidate();
         }
     }
+}
+
+fn toggle_keys(r: &mut Running) {
     if r.input.pressed("core:hide_hud") && r.screens.is_empty() {
         r.hud_off = !r.hud_off;
         r.quads_dirty = true;
@@ -1476,41 +1585,47 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if let Some(g) = &mut r.game {
         g.client.hide_gui = r.hud_off;
     }
-    if r.packs_pending && !r.screens.iter().any(|(s, _)| matches!(s.name(), "core:resource_packs" | "core:shader_packs")) {
-        r.packs_pending = false;
-        r.apply_settings();
+}
+
+fn reload_assets(r: &mut Running, opts: &Options) {
+    r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs()));
+    crate::packs::set_shader_pack(r.settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
+    r.assets.rescan();
+    crate::assets::set_current(&r.assets);
+    r.hud.load_layout(&opts.run_dir);
+    r.ui.reload(&mut *r.gpu, &r.assets);
+    r.post.reload(&mut *r.gpu, &r.assets);
+    r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
+    r.look = Look::new(&r.assets, &mod_ids(), &r.lang);
+    r.textures.reload(&mut *r.gpu, content(), &r.assets);
+    if let Some(a) = &mut r.audio {
+        a.reload();
     }
-    if r.input.pressed("core:reload") || f3_reload || std::mem::take(&mut r.reload_requested) {
-        r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs()));
-        crate::packs::set_shader_pack(r.settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
-        r.assets.rescan();
-        crate::assets::set_current(&r.assets);
-        r.hud.load_layout(&opts.run_dir);
-        r.ui.reload(&mut *r.gpu, &r.assets);
-        r.post.reload(&mut *r.gpu, &r.assets);
-        r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
-        r.look = Look::new(&r.assets, &mod_ids(), &r.lang);
-        r.textures.reload(&mut *r.gpu, content(), &r.assets);
-        if let Some(a) = &mut r.audio {
-            a.reload();
-        }
-        if let Some(g) = &mut r.game {
-            g.client.render.reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
-            g.client.render.set_textures(&mut *r.gpu, &r.textures);
-            g.client.entity_render.reload(&mut *r.gpu, &r.assets);
-            g.client.particles.reload(&mut *r.gpu, &r.assets);
-            g.client.world.remesh_all();
-        }
-        r.rebuild_all();
-        log::info!("assets reloaded");
+    if let Some(g) = &mut r.game {
+        g.client.render.reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
+        g.client.render.set_textures(&mut *r.gpu, &r.textures);
+        g.client.entity_render.reload(&mut *r.gpu, &r.assets);
+        g.client.particles.reload(&mut *r.gpu, &r.assets);
+        g.client.sky.reload(&mut *r.gpu, &r.assets);
+        g.client.world.remesh_all();
+    }
+    r.rebuild_all();
+    log::info!("assets reloaded");
+}
+
+fn window_keys(r: &mut Running) {
+    if r.input.pressed("core:fullscreen") {
+        let on = r.window.fullscreen().is_none();
+        r.window.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+        r.settings.set("fullscreen", on as u32 as f64);
     }
     if r.input.pressed("core:screenshot") {
         r.gpu.request_capture();
         r.shot_pending = true;
     }
-    r.screen_input(scale, &mut requests);
-    r.handle(requests);
+}
 
+fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
     let paused = r.screens.iter().any(|(s, _)| s.pauses());
     let world_input = r.screens.is_empty();
     if let Some(g) = &mut r.game {
@@ -1526,10 +1641,11 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             g.client.update(&mut *r.gpu, &r.textures, &Input::default(), dt);
         }
         r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
-        r.prof[1] = Instant::now().duration_since(now).as_secs_f32() * 1000.0;
+        r.prof[1] = Instant::now().duration_since(frame_start).as_secs_f32() * 1000.0;
     }
-    r.entity_ticks(dt as f32);
-    r.client_packets();
+}
+
+fn play_sounds(r: &mut Running) {
     if let Some(a) = &mut r.audio {
         let listener = r.game.as_ref().map(|g| g.client.listener());
         a.update(&r.assets, listener.as_ref());
@@ -1542,6 +1658,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             a.play(&r.assets, p);
         }
     }
+}
+
+fn client_events(r: &mut Running) {
     let events = r.game.as_mut().map(|g| std::mem::take(&mut g.client.events)).unwrap_or_default();
     for ev in events {
         match ev {
@@ -1561,6 +1680,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
         }
     }
+}
+
+/// Chat and inventory keys, which open and close screens around the game.
+fn world_keys(r: &mut Running) {
     if r.game.is_some() && r.screens.is_empty() {
         let command = r.input.pressed("core:command");
         let f3_held = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k.key));
@@ -1586,8 +1709,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                     g.client.sent.push(t.clone());
                     let sent = &mut g.client.sent;
                     sent.drain(..sent.len().saturating_sub(CHAT_HISTORY));
-                    std::fs::write(chat_history_path(&r.settings.run_dir), sent.join("
-")).ok();
+                    std::fs::write(chat_history_path(&r.settings.run_dir), sent.join("\n")).ok();
                 }
             }
             r.handle(vec![Request::SendChat(t)]);
@@ -1602,6 +1724,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.set_capture(true);
         r.quads_dirty = true;
     }
+}
+
+fn handle_disconnect(r: &mut Running) {
     if let Some(reason) = r.game.as_ref().and_then(|g| g.client.disconnected.clone()) {
         log::info!("disconnected: {reason}");
         r.leave_world_silent();
@@ -1609,6 +1734,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.open(screens::engine("core:title"));
         r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
+}
+
+fn end_input(r: &mut Running) {
     r.input.sensitivity = r.settings.sensitivity();
     r.input.invert_y = r.settings.invert_y();
     r.input.toggle_sneak = r.settings.toggle_sneak();
@@ -1623,7 +1751,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     } else {
         r.screen_frames = r.screen_frames.saturating_add(1);
     }
+}
 
+fn refresh_hud(r: &mut Running) {
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.shows_chat());
         if r.hud.editing() && !r.screens.last().is_some_and(|(s, _)| s.name() == "core:hud_editor") {
@@ -1645,7 +1775,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.ui_textures = r.textures.generation();
         r.quads_dirty = true;
     }
-    r.poll_bindings();
+}
+
+fn layout_uis(r: &mut Running, scale: f32) -> f32 {
     let surface = r.gpu.surface_size();
     let gui_size = Vec2::new(surface.0 as f32, surface.1 as f32) / scale;
     // Whole physical pixels per pixel of the font's design.
@@ -1666,69 +1798,55 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
         }
     }
+    text_unit
+}
 
-    let t = Instant::now();
-    r.prof[1] = (t.duration_since(now).as_secs_f32() * 1000.0 - r.prof[1]).max(0.0);
-    let Some(info) = r.gpu.begin_frame() else { return false };
-    let t2 = Instant::now();
-    r.prof[2] = t2.duration_since(t).as_secs_f32() * 1000.0;
-    if (r.depth.1, r.depth.2) != (info.width, info.height) {
-        r.gpu.destroy_texture(r.depth.0);
-        r.depth = make_depth(&mut *r.gpu, info.width, info.height);
+fn build_ui_quads(r: &mut Running, scale: f32) {
+    let mut all = Vec::new();
+    let game = crate::content::try_content().map(|c| (c, &r.textures));
+    let client = r.game.as_ref().map(|g| &g.client);
+    let mut previews = Vec::new();
+    let preview_tex = r.preview_tex;
+    let mut layers: Vec<&Ui> = Vec::new();
+    let mut animated = Vec::new();
+    if r.game.is_some() && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
+        layers.push(&r.hud.ui);
     }
-    if r.quads_dirty {
-        r.quads_dirty = false;
-        let mut all = Vec::new();
-        let game = crate::content::try_content().map(|c| (c, &r.textures));
-        let client = r.game.as_ref().map(|g| &g.client);
-        let mut previews = Vec::new();
-        let preview_tex = r.preview_tex;
-        let mut layers: Vec<&Ui> = Vec::new();
-        let mut animated = Vec::new();
-        if r.game.is_some() && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
-            layers.push(&r.hud.ui);
-        }
-        // Only the top screen shows, like vanilla: the ones under it are not drawn through its
-        // see-through overlay.
-        layers.extend(r.screens.last().map(|(_, u)| u));
-        for ui in layers {
-            let look = &r.look;
-            let textures = &r.textures;
-            let unit = ui.text_unit;
-            let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool, icon: Option<u32>| {
-                crate::hud::draw_custom(ren, look, textures, client, tag, data, rect, hovered, icon, scale, unit);
-                if tag == crate::client::modui::TAG_ENTITY {
-                    let inner = crate::ui::Rect { x: rect.x + scale, y: rect.y + scale, w: rect.w - 2.0 * scale, h: rect.h - 2.0 * scale };
-                    previews.push([inner.x, inner.y, inner.w, inner.h]);
-                    if let Some(t) = preview_tex {
-                        ren.image(inner, t, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
-                    }
+    // Only the top screen shows, like vanilla: the ones under it are not drawn through its
+    // see-through overlay.
+    layers.extend(r.screens.last().map(|(_, u)| u));
+    for ui in layers {
+        let look = &r.look;
+        let textures = &r.textures;
+        let unit = ui.text_unit;
+        let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool, icon: Option<u32>| {
+            crate::hud::draw_custom(ren, look, textures, client, tag, data, rect, hovered, icon, scale, unit);
+            if tag == crate::client::modui::TAG_ENTITY {
+                let inner = crate::ui::Rect { x: rect.x + scale, y: rect.y + scale, w: rect.w - 2.0 * scale, h: rect.h - 2.0 * scale };
+                previews.push([inner.x, inner.y, inner.w, inner.h]);
+                if let Some(t) = preview_tex {
+                    ren.image(inner, t, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
                 }
-            };
-            let base = all.len();
-            r.ui.build(&mut *r.gpu, &r.assets, ui, &r.look, scale, game, &mut custom);
-            all.append(&mut r.ui.quads);
-            animated.extend(r.ui.animated.drain(..).map(|mut a| {
-                a.quads = a.quads.start + base..a.quads.end + base;
-                a
-            }));
-        }
-        r.ui_cached = all;
-        r.ui_animated = animated;
-        r.previews = previews;
+            }
+        };
+        let base = all.len();
+        r.ui.build(&mut *r.gpu, &r.assets, ui, &r.look, scale, game, &mut custom);
+        all.append(&mut r.ui.quads);
+        animated.extend(r.ui.animated.drain(..).map(|mut a| {
+            a.quads = a.quads.start + base..a.quads.end + base;
+            a
+        }));
     }
+    r.ui_cached = all;
+    r.ui_animated = animated;
+    r.previews = previews;
+}
+
+fn draw_overlays(r: &mut Running, info: &weft_render::FrameInfo, scale: f32, text_unit: f32) {
     // The stack held by the mouse follows it every frame, outside the cached quads.
     r.ui.quads.clear();
     r.ui.quads.extend_from_slice(&r.ui_cached);
     crate::ui::render::animate(&mut r.ui.quads, &r.ui_animated);
-    // The hurt flash fades every frame, so it stays out of the cache, under the rest.
-    if let Some(flash) = r.game.as_ref().map(|g| g.client.hurt_flash).filter(|&f| f > 0.0) {
-        if let Some((tex, _, _)) = r.ui.texture(&mut *r.gpu, &r.assets, "core:gui/vignette") {
-            let cached = std::mem::take(&mut r.ui.quads);
-            r.ui.image(crate::ui::Rect { x: 0.0, y: 0.0, w: surface.0 as f32, h: surface.1 as f32 }, tex, [0.0, 0.0, 1.0, 1.0], 0xD0101000 | (flash / 0.5 * 200.0) as u32);
-            r.ui.quads.extend_from_slice(&cached);
-        }
-    }
     if let Some(g) = &mut r.game {
         g.client.collect_gizmos();
         let cl = &mut g.client;
@@ -1778,13 +1896,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let rect = crate::ui::Rect { x: p.x - 9.0 * scale, y: p.y - 9.0 * scale, w: 18.0 * scale, h: 18.0 * scale };
         crate::hud::stack_icon(&mut r.ui, &r.textures, rect, cursor, scale, text_unit);
     }
+}
 
+fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
     r.list.clear();
     if let Some(g) = r.game.as_mut().filter(|_| !r.screens.is_empty()) {
         if let Some(&[x, y, w, h]) = r.previews.first() {
             let worn = g.client.worn();
             let look = r.input.cursor - Vec2::new(x, y);
-            let tex = g.client.entity_render.draw_preview(&mut *r.gpu, &mut r.list, &info, [w.round() as u32, h.round() as u32], look, &worn);
+            let tex = g.client.entity_render.draw_preview(&mut *r.gpu, &mut r.list, info, [w.round() as u32, h.round() as u32], look, &worn);
             if tex != r.preview_tex {
                 r.preview_tex = tex;
                 r.quads_dirty = true;
@@ -1803,24 +1923,21 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let worn = g.client.worn();
         let held = g.client.held().item;
         g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
-        g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
+        g.client.render(&mut *r.gpu, &mut r.list, info, &r.textures);
     }
     r.list.push(Cmd::EndPass);
     if post {
-        r.post.apply(&mut *r.gpu, &mut r.list, &info);
+        r.post.apply(&mut *r.gpu, &mut r.list, info);
     } else {
         // The UI pipeline has no depth, so it cannot draw in a pass that has one.
         r.list.push(Cmd::BeginPass { color: Some((Target::Surface, None)), depth: None });
     }
-    r.ui.draw(&mut *r.gpu, &mut r.list, &info, scale);
+    r.ui.draw(&mut *r.gpu, &mut r.list, info, scale);
     r.list.push(Cmd::Mark);
     r.list.push(Cmd::EndPass);
+}
 
-    let capture_now = r.shot_pending;
-    let t3 = Instant::now();
-    r.prof[3] = t3.duration_since(t2).as_secs_f32() * 1000.0;
-    r.gpu.end_frame(&r.list);
-    r.prof[4] = t3.elapsed().as_secs_f32() * 1000.0;
+fn report_frame(r: &mut Running, dt: f64) {
     if let Some(g) = &r.game {
         r.diag.frame(&crate::diag::FrameSample {
             frame_ms: dt as f32 * 1000.0,
@@ -1859,24 +1976,28 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.bench = None;
         }
     }
-    if capture_now {
-        r.shot_pending = false;
-        if let Some(cap) = r.gpu.take_capture() {
-            let path = r.shot_path.take().unwrap_or_else(|| {
-                r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs()))
-            });
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
-                Ok(()) => log::info!("screenshot saved to {}", path.display()),
-                Err(e) => log::error!("screenshot: {e}"),
-            }
-            if let Some(id) = r.shot_image.take() {
-                api::store_image(id, cap.width, cap.height, cap.rgba);
-            }
+}
+
+fn save_screenshot(r: &mut Running) {
+    r.shot_pending = false;
+    if let Some(cap) = r.gpu.take_capture() {
+        let path = r.shot_path.take().unwrap_or_else(|| {
+            r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs()))
+        });
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
+            Ok(()) => log::info!("screenshot saved to {}", path.display()),
+            Err(e) => log::error!("screenshot: {e}"),
+        }
+        if let Some(id) = r.shot_image.take() {
+            api::store_image(id, cap.width, cap.height, cap.rgba);
         }
     }
+}
+
+fn count_fps(r: &mut Running) {
     r.fps_frames += 1;
     let el = r.fps_timer.elapsed().as_secs_f32();
     if el >= 0.5 {
@@ -1885,7 +2006,6 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.fps_timer = Instant::now();
         r.fps_frames = 0;
     }
-    false
 }
 
 /// Lines typed into chat, kept across sessions for the arrow keys.

@@ -368,6 +368,12 @@ impl Bound {
 /// swing), and keyframe animations with their time and weight.
 pub struct Motion<'a> {
     pub pitch: f32,
+    /// Where the head turns apart from the body, about y.
+    pub head_yaw: f32,
+    /// Limbs by the swimming stroke instead of `swing`, this far into it (vanilla's limbSwing).
+    pub swim: Option<f32>,
+    /// How far a swing of the arm is, 0..1, 0 for none.
+    pub attack: f32,
     pub swing: f32,
     pub anims: &'a [(&'a Bound, f32, f32)],
     /// Vanilla's sneaking pose for bipeds (the bones Bedrock names `body`, arms, legs, head).
@@ -375,12 +381,12 @@ pub struct Motion<'a> {
 }
 
 /// (about x, about y) added to a part's rest (`rest_x` about x) by its role.
-pub fn role_angles(r: u32, rest_x: f32, pitch: f32, swing: f32) -> [f32; 2] {
+pub fn role_angles(r: u32, rest_x: f32, pitch: f32, head_yaw: f32, swing: f32) -> [f32; 2] {
     // Arms resting held out (a zombie's) only sway a little.
     let arm = if rest_x.abs() > 1.0 { swing * 0.2 } else { swing };
     match r {
         // Faces look along -Z: tilting the front up is a positive turn about X.
-        role::HEAD => [pitch, 0.0],
+        role::HEAD => [pitch, head_yaw],
         role::ARM_LEFT => [arm, 0.0],
         role::ARM_RIGHT => [-arm, 0.0],
         role::LEG_RIGHT | role::LEG_FRONT_LEFT => [swing, 0.0],
@@ -391,15 +397,57 @@ pub fn role_angles(r: u32, rest_x: f32, pitch: f32, swing: f32) -> [f32; 2] {
     }
 }
 
+/// The stroke of vanilla's HumanoidModel, as a limb's rotation about x, y, z in our model space
+/// (y up where vanilla's is down, so x and z turn the other way). The bone named `rightArm` has the
+/// role `ARM_LEFT`, and legs the same. `None`: not a limb.
+fn swim_angles(r: u32, limb_swing: f32) -> Option<Vec3> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let reach = |l: f32| (-65.0 * l + l * l) / (-65.0 * 14.0 + 14.0 * 14.0) * 1.870_796_4;
+    let l = limb_swing.rem_euclid(26.0);
+    // The arm turned over above the head, a pull down to the side, and back forward.
+    let arm = |right: bool| {
+        let side = if right { -1.0 } else { 1.0 };
+        let (x, z) = if l < 14.0 {
+            (0.0, PI + side * reach(l))
+        } else if l < 22.0 {
+            let o = (l - 14.0) / 8.0;
+            (FRAC_PI_2 * o, if right { 1.270_796_3 + 1.870_796_4 * o } else { 5.012_389 - 1.870_796_4 * o })
+        } else {
+            (FRAC_PI_2 - FRAC_PI_2 * (l - 22.0) / 4.0, PI)
+        };
+        Vec3::new(-x, PI, -z)
+    };
+    let kick = |phase: f32| Vec3::new(-0.3 * (limb_swing * 0.333_333_34 + phase).cos(), 0.0, 0.0);
+    match r {
+        role::ARM_LEFT => Some(arm(true)),
+        role::ARM_RIGHT => Some(arm(false)),
+        role::LEG_RIGHT => Some(kick(PI)),
+        role::LEG_LEFT => Some(kick(0.0)),
+        _ => None,
+    }
+}
+
 /// Bone transforms (model pixels in, `root` space out), parents before children as models list
 /// them; a part listed before its parent gets the root.
 pub fn pose(parts: &[Part], root: Mat4, m: &Motion, out: &mut Vec<Mat4>) {
     out.clear();
     for (i, p) in parts.iter().enumerate() {
-        let a = role_angles(p.role, p.rest[0], m.pitch, m.swing);
+        let a = role_angles(p.role, p.rest[0], m.pitch, m.head_yaw, m.swing);
         let mut rot = Vec3::new(p.rest[0] + a[0], p.rest[1] + a[1], p.rest[2]);
         let mut offset = Vec3::ZERO;
         let mut scale = Vec3::ONE;
+        if let Some(stroke) = m.swim.and_then(|limb| swim_angles(p.role, limb)) {
+            rot = stroke;
+        }
+        // Vanilla's setupAttackAnimation: up, across and down, higher the higher it looks. The bone
+        // named `rightArm` has this role.
+        if m.attack > 0.0 && p.role == role::ARM_LEFT {
+            use std::f32::consts::PI;
+            let eased = 1.0 - (1.0 - m.attack).powi(4);
+            let across = (m.attack * PI).sin();
+            rot.x += (eased * PI).sin() * 1.2 + across * (m.pitch + 0.7) * 0.75;
+            rot.z += across * 0.4;
+        }
         if m.crouch {
             // ModelBiped.isSneak: body leans 0.5 forward, arms 0.4 more, legs move up 3 and back
             // 4 to stay under it, the head drops 1.
@@ -442,8 +490,8 @@ mod tests {
         let (a, b) = (role::LEG_SWEEP_A, role::LEG_SWEEP_B);
         assert_eq!([0, 1, 2, 3].map(|i| role_of(&format!("leg{i}"), 8)), [a, b, b, a]);
         // An arm resting held out (a zombie's) only sways.
-        assert_eq!(role_angles(role::ARM_LEFT, std::f32::consts::FRAC_PI_2, 0.0, 1.0), [0.2, 0.0]);
-        assert_eq!(role_angles(role::ARM_LEFT, 0.0, 0.0, 1.0), [1.0, 0.0]);
+        assert_eq!(role_angles(role::ARM_LEFT, std::f32::consts::FRAC_PI_2, 0.0, 0.0, 1.0), [0.2, 0.0]);
+        assert_eq!(role_angles(role::ARM_LEFT, 0.0, 0.0, 0.0, 1.0), [1.0, 0.0]);
     }
 
     #[test]
@@ -461,7 +509,7 @@ mod tests {
         assert!(parts[1].cuboids[0].mirror && parts[2].mesh.len() == 6);
         // A Bedrock arm at x = -90 points forward (-Z): its hand ends up in front of the shoulder.
         let mut mats = Vec::new();
-        pose(&parts, Mat4::IDENTITY, &Motion { pitch: 0.0, swing: 0.0, anims: &[], crouch: false }, &mut mats);
+        pose(&parts, Mat4::IDENTITY, &Motion { pitch: 0.0, head_yaw: 0.0, swing: 0.0, swim: None, attack: 0.0, anims: &[], crouch: false }, &mut mats);
         let hand = mats[1].transform_point3(Vec3::new(-6.0, 12.0, 0.0));
         assert!(hand.z < -8.0 && (hand.y - 22.0).abs() < 0.01, "{hand}");
 

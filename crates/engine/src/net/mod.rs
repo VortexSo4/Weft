@@ -161,12 +161,13 @@ wire_struct! {
 
 /// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
 /// stands on (0: the world), which clients draw it relative to.
-pub type Move = (u64, DVec3, f32, f32, bool, u64);
+pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, u64);
 
 messages! {
     #[derive(Clone)]
     pub enum ToClient: ClientTag, to_server = false; {
-        Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
+        /// `look` (yaw, pitch), `selected` and `flying` as it left them.
+        Welcome { player: u64, dim: u32, pos: DVec3, seed: u64, look: [f32; 2], selected: u32, flying: bool },
         /// `edit`: sent again because blocks in it changed (shown whole, at once), not loading.
         Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, edit: bool },
         /// Cubes of a moving structure (entity `id`), in its own coordinates; `full`: all of them
@@ -192,8 +193,8 @@ messages! {
         Despawn(Vec<(u64, bool)>),
         /// Items picked up: (item entity, who took it). They fly to the taker before going.
         Taken(Vec<(u64, u64)>),
-        /// A use (right click) did something: the arm swings.
-        Swing,
+        /// A use (right click) did something: the arm swings, and dips if the held item was used.
+        Swing { used_item: bool },
         GameMode(crate::world::GameMode),
         /// Everyone online, sent when someone joins or leaves.
         Players(Vec<String>),
@@ -206,7 +207,23 @@ messages! {
         /// (knockback, a mod's push).
         Push(([f32; 3], bool)),
         /// The player's walking speed and jump multipliers.
-        Movement { speed: f32, jump: f32 },
+        /// The player's attributes that changed, by id.
+        Attributes(Vec<(u32, f32)>),
+        /// Mining that block is not allowed (`question::BREAK_BLOCK`).
+        BreakRefused { frame: u64, pos: IVec3 },
+        /// Holding the use button started on an item that takes this many ticks, or it ended.
+        Using(Option<u32>),
+        Weather { raining: bool, thunder: bool },
+        /// A white flash on an entity.
+        Flash(u64),
+        /// Someone else's arm swings: a hit, a use, mining.
+        EntitySwing(u64),
+        /// Who is mining what, and how far along (0..1), besides this player.
+        Cracks(Vec<(u64, IVec3, f32)>),
+        /// The player's `permission` level, for what its client offers.
+        Permission(u32),
+        /// A sprinting hit landed, which ends the sprint.
+        StopSprint,
         /// `block`: the state it was opened on (0: none), `name`: what it belongs to is called.
         OpenMenu { kind: u32, window: u32, slots: u32, owner: u64, block: u32, name: String },
         MenuSlots(Vec<(u32, ItemStack)>),
@@ -242,7 +259,13 @@ messages! {
         Join { name: String, key: String },
         /// `frame`: the body it rides and its position relative to that body as the client shows it
         /// (the client shows bodies behind the server; only the relative position agrees).
-        Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, crouched: bool, frame: Option<(u64, DVec3)> },
+        Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, pose: crate::world::Pose, sprint: bool, flying: bool, frame: Option<(u64, DVec3)> },
+        /// Started mining this block (`frame` like `Break`'s).
+        StartBreak { pos: IVec3, frame: u64 },
+        /// Stopped mining without finishing.
+        StopBreak,
+        /// Let go of the use button before the item took effect.
+        StopUsing,
         /// `frame`: the structure (entity) the block is part of, its position in the structure's
         /// coordinates; 0 for the world.
         Break { pos: IVec3, frame: u64 },

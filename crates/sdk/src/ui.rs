@@ -23,6 +23,29 @@ impl ClientView {
     pub fn player(&self) -> u64 {
         unsafe { (host().client_player)(self.raw) }
     }
+    /// Own player's attribute, as the server says. Mods' attributes come too.
+    pub fn attribute(&self, a: &crate::Attribute) -> f64 {
+        unsafe { (host().client_attribute)(self.raw, abi::Str::new(a.name())) }
+    }
+    /// How charged the next swing is, 0..1: for a bar of your own.
+    pub fn swing_strength(&self) -> f32 {
+        unsafe { (host().client_swing_strength)(self.raw) }
+    }
+    /// Ticks left of the item being used.
+    pub fn using(&self) -> Option<f32> {
+        let left = unsafe { (host().client_using)(self.raw) };
+        (left >= 0.0).then_some(left)
+    }
+    pub fn day_time(&self) -> u64 {
+        unsafe { (host().client_day_time)(self.raw) }
+    }
+    pub fn raining(&self) -> bool {
+        unsafe { (host().client_raining)(self.raw) != 0 }
+    }
+    /// The player's permission level (`abi::permission`).
+    pub fn permission(&self) -> u32 {
+        unsafe { (host().client_permission)(self.raw) }
+    }
     /// Own player's synced component.
     pub fn component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         let p = unsafe { (host().client_component)(self.raw, 0, c.id()) };
@@ -516,7 +539,7 @@ impl Ui {
         self.leaf(n)
     }
 
-    /// Progress from any value 0..1.
+    /// Progress from any value 0..1; a negative one hides it, like `icons`.
     pub fn progress_bind(&mut self, class: &str, s: S, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
         self.progress_bind_dir(class, s, abi::ui_dir::RIGHT, f)
     }
@@ -535,6 +558,16 @@ impl Ui {
         let mut n = node(k::ICONS, S::default());
         n.class = Str::new(class);
         n.count = count;
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
+    /// Like `icons`, jumping about at 4 or less (hearts near the end).
+    pub fn icons_shaking(&mut self, class: &str, count: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::ICONS, S::default());
+        n.class = Str::new(class);
+        n.count = count;
+        n.data = 2;
         n.bind = bind(f);
         self.leaf(n)
     }

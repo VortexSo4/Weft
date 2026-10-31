@@ -121,9 +121,14 @@ impl Camera {
         Vec3::new(-sy * cp, sp, -cy * cp)
     }
 
-    pub fn view(&self) -> Mat4 {
+    /// The walking sway alone, in view space: the world moves by it, and so does the hand.
+    pub fn bobbing(&self) -> Mat4 {
         let (offset, roll, pitch) = self.bob;
-        Mat4::from_translation(offset) * Mat4::from_rotation_z(roll) * Mat4::from_rotation_x(pitch) * glam::camera::rh::view::look_to_mat4(Vec3::ZERO, self.forward(), Vec3::Y)
+        Mat4::from_translation(offset) * Mat4::from_rotation_z(roll) * Mat4::from_rotation_x(pitch)
+    }
+
+    pub fn view(&self) -> Mat4 {
+        self.bobbing() * glam::camera::rh::view::look_to_mat4(Vec3::ZERO, self.forward(), Vec3::Y)
     }
 
     pub fn proj(&self, aspect: f32) -> Mat4 {

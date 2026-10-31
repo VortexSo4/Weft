@@ -146,3 +146,4 @@ hud.element.base.health = Здоровье
 hud.element.base.armor = Броня
 hud.element.base.food = Сытость
 hud.element.base.air = Воздух
+hud.element.base.attack_indicator = Индикатор атаки

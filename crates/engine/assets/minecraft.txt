@@ -11,3 +11,7 @@ block/destroy_7 = block/destroy_stage_7
 block/destroy_8 = block/destroy_stage_8
 block/destroy_9 = block/destroy_stage_9
 entity/player = entity/player/wide/steve crop 0 0 64 32
+particle/flame = particle/flame
+particle/bubble = particle/bubble
+particle/splash = particle/splash_0
+particle/drip = particle/drip_fall

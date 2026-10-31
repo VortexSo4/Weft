@@ -27,6 +27,8 @@ pub const ENGINE_KEYS: &[(&str, Key)] = {
         ("core:debug", Key::Code(F3)),
         ("core:screenshot", Key::Code(F2)),
         ("core:perspective", Key::Code(F5)),
+        ("core:fullscreen", Key::Code(F11)),
+        ("core:player_list", Key::Code(Tab)),
         ("core:hide_hud", Key::Code(F1)),
         // Also F3+T, like vanilla.
         ("core:reload", Key::Code(F8)),

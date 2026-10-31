@@ -49,7 +49,7 @@ pub fn register(r: &mut Registry) {
     r.biome(&FOREST).humidity(0.25..).surface("grass", "dirt", 3).tint(grass, 0x79c05a).tint(foliage, 0x59ae30).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
     r.biome(&BIRCH_FOREST).temperature(..0.1).humidity(0.05..).surface("grass", "dirt", 3).tint(grass, 0x88bb67).tint(foliage, 0x6ba941).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
     r.biome(&TAIGA).temperature(..-0.15).surface("grass", "dirt", 3).tint(grass, 0x86b783).tint(foliage, 0x68a464).tint(water, 0x3d57d6).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome(&SNOWY).temperature(..-0.45).surface("snowy_grass", "dirt", 3).frozen("ice").tint(grass, 0x80b497).tint(foliage, 0x60a17b).tint(water, 0x3938c9).tag("cold").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&SNOWY).snows().temperature(..-0.45).surface("snowy_grass", "dirt", 3).frozen("ice").tint(grass, 0x80b497).tint(foliage, 0x60a17b).tint(water, 0x3938c9).tag("cold").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
     r.biome(&DESERT).temperature(0.35..).humidity(..0.0).surface("sand", "sand", 3).under("sandstone", 1).tint(grass, 0xbfb755).tint(foliage, 0xaea42a).tag("dry").tag("hot");
     r.biome(&MOUNTAINS).surface("grass", "dirt", 3).bare_above(130).tint(grass, 0x8ab689).tint(foliage, 0x6da36b).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
     r.biome(&OCEAN).surface("sand", "sand", 3).deep_top("gravel", SEA - 8).tag("ocean");
@@ -195,7 +195,6 @@ fn decorate(g: &mut Gen) {
                 continue;
             }
             let (wx, wz) = (ox + x as i32, oz + z as i32);
-            let below = if y == 0 { g.surface_block(wx, wz) } else { g.get(x, y - 1, z) };
             let h = hash(seed ^ 0xF10, wx as i64, 0, wz as i64);
             let roll = unit(h);
             // Plants go where they could be planted (soil tags); the biome decides how many.
@@ -203,8 +202,13 @@ fn decorate(g: &mut Gen) {
             if FROZEN.on_biome(b) {
                 continue;
             }
+            let grass_chance = GRASS_COVER.on_biome(b).unwrap_or(0.05) as f64;
+            // What is under the lowest layer takes a look at the terrain: only if anything would grow.
+            if y == 0 && roll >= grass_chance.max(0.08) {
+                continue;
+            }
+            let below = if y == 0 { g.surface_block(wx, wz) } else { g.get(x, y - 1, z) };
             if PLANT_SOIL.on_block(below) {
-                let grass_chance = GRASS_COVER.on_biome(b).unwrap_or(0.05) as f64;
                 if roll < 0.012 {
                     let flower = FLOWERS.on_biome(b).map_or_else(|| [DANDELION.id(), ROSE.id()][(h >> 32) as usize % 2], |l| l.pick(h >> 32).unwrap_or(0));
                     if flower != 0 {

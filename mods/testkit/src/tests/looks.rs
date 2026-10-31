@@ -321,6 +321,8 @@ pub async fn item_model_file(t: T) -> R {
     t.c().select(0);
     t.c().look(0.0, 20.0);
     t.settled().await?;
+    // The hand comes up with it.
+    t.secs(0.8).await?;
     let shot = t.shot("totem").await?;
     let crystal = |c: probe::C| probe::cyan(c) || (c[2] > 120 && c[0] < 90);
     let hand = shot.share(0.55, 0.55, 1.0, 0.94, crystal);
@@ -354,7 +356,9 @@ pub async fn models(t: T) -> R {
     let a = t.grab().await?;
     t.secs(0.3).await?;
     let b = t.grab().await?;
-    t.check(T::differ(&a, &b) == 0.0, "the bow holds its last frame");
+    // Below the horizon: clouds drift up there.
+    let ground = |f: &[u8]| f[f.len() / 4 / 3 * 4..].to_vec();
+    t.check(T::differ(&ground(&a), &ground(&b)) == 0.0, "the bow holds its last frame");
     t.shot("idol_bow").await?;
     // The test mod gives the player a wave: it moves the first person hand by its `hand` bone.
     t.c().look(90.0, 0.0);
@@ -412,4 +416,135 @@ pub async fn gui_shader(t: T) -> R {
     t.probe("circuit lines in the panel", v, v > 0.01);
     t.c().close_screen();
     t.no_screen().await
+}
+
+/// The sky: the sun at noon and the moon at midnight stand overhead, stars show only at night, a
+/// sunset warms the horizon on its side, and from inside water everything is its fog.
+pub async fn sky(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode creative").await?;
+    t.c().look(0.0, 89.0);
+    let bright = |c: probe::C| c.iter().all(|&v| v > 215);
+    t.op("time 6000").await?;
+    t.secs(0.6).await?;
+    let noon = t.shot("noon").await?;
+    t.probe("the sun overhead", noon.share(0.45, 0.40, 0.55, 0.57, bright), noon.share(0.45, 0.40, 0.55, 0.57, bright) > 0.5);
+    // A star is a speck: bright with sky a little way off on every side, which a cloud isn't.
+    let specks = |shot: &crate::runner::Shot| {
+        let (sx, sy) = (1.0 / 1600.0, 1.0 / 900.0);
+        let mut n = 0;
+        for y in (10..225).map(|y| y as f32 * sy * 1.0) {
+            for x in (10..1590).map(|x| x as f32 * sx) {
+                let lit = |x: f32, y: f32| shot.at(x, y).iter().all(|&v| v > 215);
+                if lit(x, y) && !lit(x - 6.0 * sx, y) && !lit(x + 6.0 * sx, y) && !lit(x, y - 6.0 * sy) && !lit(x, y + 6.0 * sy) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    t.check_eq(specks(&noon), 0, "no stars by day");
+    t.op("time 18000").await?;
+    t.secs(0.6).await?;
+    let night = t.shot("midnight").await?;
+    let moon = night.share(0.45, 0.42, 0.55, 0.56, |c| c.iter().all(|&v| v > 150));
+    t.probe("the moon overhead", moon, moon > 0.4);
+    let stars = night.share(0.0, 0.0, 1.0, 0.3, |c| c.iter().all(|&v| v > 60));
+    t.probe("stars at night", stars, stars > 0.0005);
+    // Looking at the sunset and away from it.
+    t.op("time 12400").await?;
+    t.c().look(90.0, 8.0);
+    t.secs(0.6).await?;
+    let west = t.shot("sunset").await?;
+    let warm = |c: probe::C| c[0] > 170 && c[0] as i32 > c[2] as i32 + 50;
+    t.c().look(-90.0, 8.0);
+    t.secs(0.6).await?;
+    let east = t.shot("sunset_back").await?;
+    let (w, e) = (west.share(0.0, 0.3, 1.0, 0.5, warm), east.share(0.0, 0.3, 1.0, 0.5, warm));
+    t.note(format!("warm sky: toward the sunset {w:.3}, away {e:.3}"));
+    t.check(w > e + 0.02, format!("a sunset on its side: {w:.3}, away {e:.3}"));
+    Ok(())
+}
+
+/// Clouds reach far past any grid around the camera, cover what is under them, stay behind what is
+/// nearer, and the setting lifts them.
+pub async fn clouds(t: T) -> R {
+    static LIFT: Config<i32> = Config::named("core:cloud_height");
+    t.world(5).await?;
+    t.op("mode spectator").await?;
+    t.op("time 6000").await?;
+    t.cmd("/weather clear").await?;
+    LIFT.set(0);
+    let white = |c: probe::C| c.iter().all(|&v| v > 205);
+    let s = t.state();
+    // Near the horizon from well below them: what is there is thousands of blocks away.
+    t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
+    t.c().look(0.0, 2.0);
+    t.secs(1.0).await?;
+    let (x0, y0, x1, y1) = (0.0, 0.47, 1.0, 0.53);
+    let far = t.shot("far").await?.share(x0, y0, x1, y1, white);
+    // Lifted out of reach at that angle.
+    LIFT.set(512);
+    t.secs(0.3).await?;
+    let lifted = t.shot("far_lifted").await?.share(x0, y0, x1, y1, white);
+    t.note(format!("white near the horizon: {far:.3}, lifted {lifted:.3}"));
+    t.check(far > lifted + 0.02, format!("clouds far away: {far:.3}, lifted out of reach {lifted:.3}"));
+    // From above they cover the ground; lifted over the camera they don't.
+    LIFT.set(0);
+    t.c().teleport([s.pos[0], 330.0, s.pos[2]]);
+    t.c().look(0.0, -60.0);
+    t.secs(1.0).await?;
+    let above = t.shot("above").await?.share(0.0, 0.3, 1.0, 1.0, white);
+    LIFT.set(512);
+    t.secs(0.3).await?;
+    let lifted = t.shot("above_lifted").await?.share(0.0, 0.3, 1.0, 1.0, white);
+    t.note(format!("white from above: {above:.3}, lifted {lifted:.3}"));
+    t.check(above > lifted + 0.02, format!("over the ground: {above:.3}, lifted away {lifted:.3}"));
+    // A wall nearer than they are hides them.
+    LIFT.set(0);
+    let at = [s.pos[0].floor() as i32, 150, s.pos[2].floor() as i32];
+    t.fill(add(at, [-30, 0, -12]), add(at, [30, 70, -12]), "stone").await?;
+    t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
+    t.c().look(0.0, 35.0);
+    t.secs(1.0).await?;
+    let wall = t.shot("wall").await?.share(0.2, 0.3, 0.8, 0.7, white);
+    t.check(wall < 0.005, format!("clouds through a wall: {wall:.3}"));
+    // Its slider is among the others.
+    t.c().open_screen(&screens::SETTINGS);
+    t.screen("core:settings").await?;
+    t.frames(3).await?;
+    t.shot("settings").await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    Ok(())
+}
+
+/// The attack indicator is a HUD element like the others: under the crosshair while a swing
+/// charges, filling, gone when charged, and the crosshair stays in the middle of the window.
+pub async fn attack_indicator(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 0 iron_sword 1").await?;
+    t.c().select(0);
+    // A swing that hits nothing spends the charge; looking down, nothing bright is behind the bar.
+    t.op("attr_mod me core:block_reach no_reach 0 -10 0").await?;
+    t.c().look(0.0, -40.0);
+    t.secs(1.0).await?;
+    let (x0, y0, x1, y1) = (0.49, 0.505, 0.51, 0.54);
+    let fill = |c: probe::C| c.iter().all(|&v| v > 200);
+    let rest = t.shot("charged").await?;
+    t.check(rest.share(x0, y0, x1, y1, fill) < 0.01, "nothing under the crosshair when charged");
+    let center = rest.share(0.497, 0.494, 0.503, 0.506, |c| c.iter().all(|&v| v > 150));
+    t.probe("the crosshair in the middle of the window", center, center > 0.1);
+    t.press("core:attack");
+    t.secs(0.15).await?;
+    let early = t.shot("charging").await?.share(x0, y0, x1, y1, fill);
+    t.secs(0.2).await?;
+    let later = t.shot("charging_later").await?.share(x0, y0, x1, y1, fill);
+    t.note(format!("indicator filled: {early:.3}, later {later:.3}"));
+    t.check(later > 0.02, format!("the indicator shows while charging: {later:.3}"));
+    t.check(later > early, format!("and fills: {early:.3}, then {later:.3}"));
+    t.secs(0.6).await?;
+    t.check(t.shot("charged_again").await?.share(x0, y0, x1, y1, fill) < 0.01, "and is gone once charged");
+    t.op("attr_rm me core:block_reach no_reach").await?;
+    Ok(())
 }

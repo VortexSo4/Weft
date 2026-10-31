@@ -63,7 +63,7 @@ Early. The mod interface and the save format can still change between versions. 
 
 ## Contributing
 
-Issues and pull requests are welcome, for the engine, mods, textures or docs.
+Issues and pull requests are welcome, for the engine, mods, textures or docs. Read the [AI policy](AI_POLICY.md) before opening a pull request, it applies to everyone and the template asks for it.
 
 ## License - [MPL-2.0](LICENSE)
 

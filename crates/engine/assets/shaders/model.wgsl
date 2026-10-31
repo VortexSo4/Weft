@@ -72,7 +72,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     if inst.light != 0xffffffffu {
         lit = lightmap(unpack_light(inst.light), scene.params.z, scene.light.x, scene.light.y);
     }
-    out.color = pow(inst.color * lit * shade * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.2));
+    let flash = select(mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.0), inst.hurt < 0.0);
+    out.color = pow(inst.color * lit * shade * flash, vec3(2.2));
     out.shader = inst.shader;
     out.glow = inst.glow;
     return out;

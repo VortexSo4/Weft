@@ -31,7 +31,7 @@ pub mod kind {
             })*
         };
     }
-    named_kinds!(Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter, Template);
+    named_kinds!(SkyObject, Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter, Template);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -143,6 +143,7 @@ pub type Item = Handle<kind::Item>;
 pub type Biome = Handle<kind::Biome>;
 pub type Dimension = Handle<kind::Dimension>;
 pub type Particle = Handle<kind::Particle>;
+pub type SkyObject = Handle<kind::SkyObject>;
 pub type Sound = Handle<kind::Sound>;
 pub type Entity = Handle<kind::Entity>;
 pub type Menu = Handle<kind::Menu>;
@@ -931,9 +932,14 @@ impl<'a> BlockBuilder<'a> {
 
     /// Particles of `kind` clients show around it now and then, near the player (vanilla's
     /// torch smoke, a crystal's sparks). A kind nothing registers is a load error.
-    pub fn ambient_particle(mut self, kind: &str) -> Self {
-        let kind = crate::full_name(kind);
-        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", &kind));
+    pub fn ambient_particle(self, kind: &str) -> Self {
+        self.ambient_particles(&[kind])
+    }
+
+    /// Like `ambient_particle` with several kinds at once (a torch's flame and smoke).
+    pub fn ambient_particles(mut self, kinds: &[&str]) -> Self {
+        let kinds = kinds.iter().map(|k| crate::full_name(k)).collect::<Vec<_>>().join(",");
+        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", &kinds));
         self
     }
 
@@ -1166,6 +1172,23 @@ impl ItemBuilder<'_> {
     pub fn mining_speed(self, speed: f32) -> Self {
         self.set(&c::MINING_SPEED, speed)
     }
+    /// A full swing on the ground also hits what stands next to the target, like a sword.
+    pub fn sweeps(self) -> Self {
+        self.tag(abi::comp::SWEEPS)
+    }
+    /// For fighting: in creative it doesn't break blocks, as a sword in modern. Client and server
+    /// both know, so nothing flickers. A rule that depends on more is `question::BREAK_BLOCK`.
+    pub fn no_creative_break(self) -> Self {
+        self.tag(abi::comp::NO_CREATIVE_BREAK)
+    }
+    /// Takes effect after holding the use button this long (food 32 ticks), slowing the player down.
+    pub fn use_ticks(self, ticks: u32) -> Self {
+        self.set(&c::USE_TICKS, ticks)
+    }
+    /// Full swings per second: hitting sooner does less (a sword 1.6, an empty hand 4).
+    pub fn attack_speed(self, per_second: f32) -> Self {
+        self.set(&c::ATTACK_SPEED, per_second)
+    }
     pub fn attack_damage(self, damage: f32) -> Self {
         self.set(&c::ATTACK_DAMAGE, damage)
     }
@@ -1262,6 +1285,10 @@ impl BiomeBuilder<'_> {
     pub fn frozen(self, block: &str) -> Self {
         self.edit(|r| r.frozen(block)).tag("frozen")
     }
+    /// Rain falls as snow here.
+    pub fn snows(self) -> Self {
+        self.tag(abi::comp::SNOWY)
+    }
     /// The color (`0xRRGGBB`) blocks tinted with `kind` take here (`tints::GRASS`, or a mod's
     /// own kind). Kinds not given keep their default.
     pub fn tint(mut self, kind: &'static TintKind, color: u32) -> Self {
@@ -1342,6 +1369,11 @@ impl DimensionBuilder<'_> {
     /// Everything at or above this cube y is empty, so sky light there needs no generation.
     pub fn sky_above(mut self, cube_y: i32) -> Self {
         self.desc.sky_cube_y = cube_y;
+        self
+    }
+    /// It rains and thunders here now and then, by vanilla's timing.
+    pub fn weather(mut self) -> Self {
+        self.desc.flags |= abi::dim_flags::WEATHER;
         self
     }
     pub fn no_sky_light(mut self) -> Self {
@@ -1715,6 +1747,7 @@ pub struct LiquidBuilder<'a> {
     translucent: bool,
     components: Vec<Pending>,
     desc: abi::LiquidDesc,
+    overlay: String,
     bucket: Option<(&'static Item, String, String)>,
 }
 
@@ -1738,7 +1771,7 @@ impl LiquidBuilder<'_> {
         self.opacity = o;
         self
     }
-    /// Movement speed multiplier inside.
+    /// How fast things move inside: water 1, lava 0.4.
     pub fn drag(mut self, d: f32) -> Self {
         self.drag = d;
         self
@@ -1780,6 +1813,32 @@ impl LiquidBuilder<'_> {
         self.desc.temperature = t;
         self
     }
+    /// Sprinting in it does not swim, whatever its temperature. Someone with the
+    /// `core:swim_anywhere` attribute still can, for as long as a modifier on it lasts.
+    pub fn not_swimmable(mut self) -> Self {
+        self.desc.swimmable = 0;
+        self
+    }
+    /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides
+    /// everything. By default the average color of its texture, 96 blocks.
+    pub fn fog(mut self, rgb: u32, blocks: f32) -> Self {
+        self.desc.fog_color = rgb;
+        self.desc.fog_distance = blocks;
+        self
+    }
+    /// The picture over the screen from inside, relative names are under `block/`, and how much
+    /// of it shows. By default its own texture at 0.1; for an inside that looks unlike the surface, set
+    /// this and `fog` apart from its texture.
+    pub fn overlay(mut self, texture: &str, opacity: f32) -> Self {
+        self.overlay = crate::asset("block", texture);
+        self.desc.overlay_opacity = opacity;
+        self
+    }
+    /// Nothing over the screen from inside.
+    pub fn no_overlay(mut self) -> Self {
+        self.desc.overlay_opacity = 0.0;
+        self
+    }
     /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid, in
     /// creative tab `tab` (any mod's). The engine fills and pours it; no code needed.
     pub fn bucket(mut self, item: &'static Item, empty: &Item, tab: &CreativeTab) -> Self {
@@ -1806,7 +1865,7 @@ impl Drop for LiquidBuilder<'_> {
         }
         b.components = std::mem::take(&mut self.components);
         drop(b);
-        let desc = abi::LiquidDesc { name: Str::new(&self.name), ..self.desc };
+        let desc = abi::LiquidDesc { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
         unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
         if let Some((item, empty, tab)) = self.bucket.take() {
             self.reg.item(item).max_stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tag(&format!("tab/{tab}"));
@@ -1849,8 +1908,58 @@ impl Drop for ReactionBuilder<'_> {
 }
 
 
+/// Changes how any mod's liquid looks from inside and whether it can be swum in; what you don't
+/// set stays, and its flow is the mod's own. See `Registry::change_liquid`.
+pub struct LiquidChangeBuilder<'a> {
+    reg: &'a mut Registry,
+    name: String,
+    overlay: String,
+    desc: abi::LiquidChange,
+}
+
+impl LiquidChangeBuilder<'_> {
+    pub fn swimmable(mut self, on: bool) -> Self {
+        self.desc.swimmable = on as u32;
+        self
+    }
+    /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides everything.
+    pub fn fog(mut self, rgb: u32, blocks: f32) -> Self {
+        self.desc.fog_color = rgb;
+        self.desc.fog_distance = blocks;
+        self
+    }
+    /// The picture over the screen from inside, relative names are under `block/`, and how much
+    /// of it shows.
+    pub fn overlay(mut self, texture: &str, opacity: f32) -> Self {
+        self.overlay = crate::asset("block", texture);
+        self.desc.overlay_opacity = opacity;
+        self
+    }
+    /// Nothing over the screen from inside.
+    pub fn no_overlay(mut self) -> Self {
+        self.desc.overlay_opacity = 0.0;
+        self
+    }
+}
+
+impl Drop for LiquidChangeBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::LiquidChange { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
+        unsafe { (host().reg_liquid_change)(self.reg.raw, &desc) };
+    }
+}
+
 impl Registry {
-    /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers.
+    /// Changes another mod's liquid: `r.change_liquid(&WATER).fog(0x204020, 12.0)`.
+    pub fn change_liquid<'a>(&'a mut self, liquid: &Block) -> LiquidChangeBuilder<'a> {
+        LiquidChangeBuilder { name: liquid.name().to_string(), reg: self, overlay: String::new(), desc: abi::LiquidChange::DEFAULT }
+    }
+
+    /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers, an
+    /// average of its texture for the fog's color.
     pub fn liquid<'a>(&'a mut self, liquid: &'static Block) -> LiquidBuilder<'a> {
         LiquidBuilder {
             name: liquid.name().to_string(),
@@ -1860,10 +1969,11 @@ impl Registry {
             tint: None,
             light: [0; 3],
             opacity: 2,
-            drag: 0.5,
+            drag: 1.0,
             translucent: false,
             components: Vec::new(),
             desc: abi::LiquidDesc::DEFAULT,
+            overlay: String::new(),
             bucket: None,
         }
     }

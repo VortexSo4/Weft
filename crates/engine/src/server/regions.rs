@@ -21,6 +21,15 @@ pub struct DimSet {
     pub regions: Vec<Dim>,
     pub generating: FxHashSet<IVec3>,
     pub time: u64,
+    pub day_offset: i64,
+    /// `/time` moved the sky: players hear at once, not at the next second.
+    pub day_moved: bool,
+    pub raining: bool,
+    pub thunder: bool,
+    /// When the weather changes by itself.
+    pub weather_until: u64,
+    /// Changed: players hear at once.
+    pub weather_moved: bool,
     seed: u64,
     next_id: Arc<AtomicU64>,
     owner: FxHashMap<IVec3, usize>,
@@ -32,13 +41,16 @@ pub struct DimSet {
 
 impl DimSet {
     pub fn new(id: u32, seed: u64, next_id: Arc<AtomicU64>) -> DimSet {
-        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, seed, next_id, owner: FxHashMap::default(), dirty: false, edits: Arc::default() }
+        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, day_offset: 0, day_moved: false, raining: false, thunder: false, weather_until: 0, weather_moved: false, seed, next_id, owner: FxHashMap::default(), dirty: false, edits: Arc::default() }
     }
 
     fn new_region(&mut self, section: IVec3) -> usize {
         let mut d = Dim::new(self.id, self.seed, self.next_id.clone());
         d.set_rng(weft_noise::hash(self.seed ^ self.time, section.x as i64, section.y as i64, section.z as i64));
         d.time = self.time;
+        d.day_offset = self.day_offset;
+        d.raining = self.raining;
+        d.thunder = self.thunder;
         self.regions.push(d);
         self.regions.len() - 1
     }
@@ -109,6 +121,10 @@ impl DimSet {
         self.regions.iter().find(|r| r.entities.get(id).is_some())
     }
 
+    pub fn entity(&self, id: u64) -> Option<&super::entity::Entity> {
+        self.entity_region_ref(id).and_then(|r| r.entities.get(id))
+    }
+
     pub fn has(&self, pos: IVec3) -> bool {
         self.owner.get(&section_of_cube(pos)).is_some_and(|&r| self.regions[r].has(pos))
     }
@@ -169,6 +185,12 @@ impl DimSet {
         d.conn.insert(pos, conn);
         if edited {
             d.modified.insert(pos);
+        }
+        // What the save held may need writing again once it is gone from here.
+        let ticks = super::persist::read_ticks(entities);
+        d.restore_ticks(pos, &ticks);
+        if !ticks.is_empty() || entities.len() > 12 {
+            d.on_disk.insert(pos);
         }
         for (e, inv, comps, blocks) in super::persist::read(c, entities) {
             let id = e.id;
@@ -267,6 +289,44 @@ impl DimSet {
         for r in &mut self.regions {
             r.time = t;
         }
+    }
+
+    /// `/time`: moves the sky only. `time` keeps counting, since everything waiting on a tick
+    /// (flowing water, timers, growth, effects) is timed by it.
+    pub fn set_day_time(&mut self, t: u64) {
+        self.day_offset = t as i64 - self.time as i64;
+        self.day_moved = true;
+        for r in &mut self.regions {
+            r.day_offset = self.day_offset;
+        }
+    }
+
+    /// The time of day's own clock.
+    pub fn set_weather(&mut self, raining: bool, thunder: bool, ticks: u64) {
+        (self.raining, self.thunder) = (raining, raining && thunder);
+        self.weather_until = self.time + ticks;
+        self.weather_moved = true;
+        for r in &mut self.regions {
+            r.raining = raining;
+            r.thunder = self.thunder;
+        }
+    }
+
+    /// Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a third of
+    /// it with thunder.
+    pub fn tick_weather(&mut self) {
+        if self.time < self.weather_until {
+            return;
+        }
+        let r = weft_noise::hash(self.seed ^ 0x5745_4154, self.time as i64, 0, 0);
+        let first = self.weather_until == 0;
+        let raining = !first && !self.raining;
+        let ticks = if raining { 12000 + r % 12000 } else { 12000 + r % 168000 };
+        self.set_weather(raining, raining && r >> 32 & 3 == 0, ticks);
+    }
+
+    pub fn day_time(&self) -> u64 {
+        self.time.saturating_add_signed(self.day_offset)
     }
 
     /// Recomputes regions from the sections in use: merges touching regions, splits separated

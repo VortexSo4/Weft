@@ -241,10 +241,11 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `max_stack(N)`
 - `durability`
 - `tool("pickaxe")`, `tool_level(tier)`, `mining_speed(speed)`
-- `attack_damage`
+- `attack_damage`, `attack_speed(per_second)` (hitting before it has recharged does less; a sword is 1.6, and without it an item swings at an empty hand's 4) and `sweeps()` (a full swing on the ground also does 1 damage to what stands next to the target)
+- `no_creative_break()`: in creative it doesn't break blocks, like a sword. Both sides know, so nothing flickers; a rule that depends on more is `question::BREAK_BLOCK`, which is asked when mining starts and tells the client no right away
 - `placed_block(&BLOCK)`
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
-- `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it)
+- `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it). `base_api::eat` is the base game's eating: `.set(&FOOD, ..).use_ticks(32).on_use(base_api::eat)`
 
 ### Entities
 `r.entity(&ENTITY)` and then:
@@ -272,13 +273,19 @@ Look at testmod's generator for an example.
 - `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
 - `renewable(n)`: a new source where n sources meet (water 2)
 - `temperature`
+- `not_swimmable()`: sprinting in it doesn't swim. `attribute::SWIM_ANYWHERE` lifts that per player, with a modifier for as long as it should last: `w.add_modifier(id, &attribute::SWIM_ANYWHERE, "mymod:swims", attr_op::ADD, 1.0, 20)`. It changes nothing else: a burning liquid keeps burning unless `question::HURT` says no
+- `fog(rgb, blocks)` and `overlay(texture, opacity)` or `no_overlay()`: what you see from inside. By default both come from its texture; set them when the inside should look different from the surface: `r.liquid(&TAR).fog(0x1A1408, 6.0).overlay("tar_inside", 0.4)`
+- `drag(d)`: how fast things move inside (water 1, lava 0.4), `light`, `opacity` (light it absorbs per block), `texture`, `tint`
 - `bucket(..)`
+
+Another mod's liquid: `r.change_liquid(&WATER).fog(0x204020, 12.0)`, also `overlay`, `no_overlay`, `swimmable(bool)`. What you don't set stays.
 
 Reactions: `r.liquid_reaction("#hot", "#water").source_block("obsidian")`.
 
 ### World
 - `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
 - `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, `bare`, or `generator` + `column` to fill it in code)
+- `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.remove_sky` for what is in its sky, the sun and the moon included
 - `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it)
 - `r.scatter(&TREES)` for trees and the like, `r.decorate(f)` for plants, in every dimension
@@ -345,13 +352,15 @@ The usage string is the whole spec: the engine parses it, checks types, complete
 Reading values by name: `cmd.int("amount")`, `cmd.targets("who")`.\
 Answering: `cmd.reply("mymod.healed", &[Arg::Int(amount)])` with `mymod.healed = healed by {0}` in your lang files. The reply travels as the key and its arguments and each player's client formats it in its own language, so a server never sends English text. The same goes for gizmo labels (`w.draw_text(&GROUP, pos, key, &args, ..)`) and the client's `draw_text`/`screen_text`.\
 The client draws the same shapes for one frame: `c.draw_line/box/fill/text(None, ..)`, or `Some(&GROUP)` to show them only while that group is on.\
+Who may run it goes by permission levels, the same for the engine's commands and yours: 0 everyone, 1 moderator, 2 game master, 3 admin, 4 the host. A command asks for level 2 unless you say otherwise, `r.command(..).permission(permission::EVERYONE)`, and players below it are refused and not offered it. `/op <who> [level]` hands them out, and for anything else your mod does, `w.permission(player)` tells a player's level and `w.set_permission(player, level)` changes it.
+
 The callback gets a `ServerCommand`: `cmd.world()` is where it runs, and what it changes settles when it returns (neighbors updated, events delivered), like `/setblock`.`r.client_command` is the same for commands that run on the client that typed them: a `ClientCommand` with `cmd.client()` and no world.`r.command_branch("time", "dawn", ..)` adds a branch to someone else's command (`r.client_command_branch` for client ones like `/gizmo`), and a `r.command` named like one of the engine's (`/give`, `/tp`...) replaces it.
 
 ## World API
 
 Inside any callback you get a `World` (`w`):
 - blocks (`get`, `set`, `schedule`); for anything big, `w.fill_sphere(center, radius, block, keep_unbreakable)` fills a whole ball in one call (a crater with air): the engine does it at the end of the tick on every core, a cube at a time, lights each cube once, loads what it opens up in players' views right away and gives the rest the change when it loads. Players see it appear whole. Hundreds of blocks of radius take well under a second, where `set` per block costs about 1.6 µs each. Testmod's dynamite uses it
-- entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`, `push` for a trampoline or a blast, players too). Speed and jump are attributes (`attribute::MOVEMENT_SPEED`, `JUMP_STRENGTH`) for mobs and players alike: `w.add_modifier(player, &MOVEMENT_SPEED, ..)` is a speed effect
+- entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `near_bodies` for what can be hit, `navigate`, `walk`, `push` for a trampoline or a blast, players too). Speed and jump are attributes (`attribute::MOVEMENT_SPEED`, `JUMP_STRENGTH`) for mobs and players alike: `w.add_modifier(player, &MOVEMENT_SPEED, ..)` is a speed effect Reach and mining speed are attributes too (`attribute::BLOCK_REACH`, `ENTITY_REACH`, `MINING_SPEED`), and the client reads them: a modifier is all a long tool or a haste effect takes. `w.in_liquid(pos)` knows a liquid's surface, which the block alone doesn't tell.
 - inventories (`inventory(id).get/set/insert`, `inventory(id).group("fuel")`); a player's by the groups its inventory was declared with (`r.player_inventory().group("hotbar", Slots::row(9).hotbar())..`), `core:equipment` for all equipment slots
 - components, energy, menus
 - particles (`w.spawn_particles(&SPARK, pos).count(20)`)
@@ -405,6 +414,7 @@ You can contact me on Discord: `@vortex_so`
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)
 - [Tooltips](tooltips.md): item tooltips, rich text and effects, adding them from other mods and packs
 - [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
+- [Sky](sky.md): suns, moons, stars and skyboxes in any dimension, changing or removing the ones there
 - [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
 - [UI](ui.md): screens, HUD, menus, looks, GUI textures
 - [Machines](machines.md): blocks with inventories, recipes, energy

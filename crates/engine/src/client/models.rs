@@ -47,7 +47,7 @@ impl KindModel {
 /// Layers one entity draws at most: its skin and what it wears.
 pub const MAX_LAYERS: usize = 8;
 
-/// One entity to pose this frame: kind, root transform, look pitch, limb swing, crouch, up to
+/// One entity to pose this frame: kind, root transform, look pitch, limb swing, crouch, swim, up to
 /// two keyframe animations (index, time, weight) and its layers.
 #[derive(Clone, Copy)]
 pub struct Posed {
@@ -56,6 +56,9 @@ pub struct Posed {
     pub pitch: f32,
     pub swing: f32,
     pub crouch: bool,
+    pub head_yaw: f32,
+    pub swim: Option<f32>,
+    pub attack: f32,
     pub anims: [(usize, f32, f32); 2],
     pub anim_count: usize,
     pub layers: [Instance; MAX_LAYERS],
@@ -214,7 +217,7 @@ impl Models {
                 }
                 (None, None) => &[],
             };
-            model::pose(&m.parts, e.root, &Motion { pitch: e.pitch, swing: e.swing, anims, crouch: e.crouch }, scratch);
+            model::pose(&m.parts, e.root, &Motion { pitch: e.pitch, head_yaw: e.head_yaw, swing: e.swing, swim: e.swim, attack: e.attack, anims, crouch: e.crouch }, scratch);
             for (o, b) in out.iter_mut().zip(scratch.iter()) {
                 *o = [b.row(0).to_array(), b.row(1).to_array(), b.row(2).to_array()];
             }

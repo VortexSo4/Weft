@@ -86,7 +86,7 @@ impl Cube {
         let mut palette: Vec<u32> = Vec::new();
         let mut last = u32::MAX;
         let mut last_i = 0u32;
-        let mut indices = vec![0u16; VOLUME];
+        let mut indices = [0u16; VOLUME];
         for (i, &s) in states.iter().enumerate() {
             if s != last {
                 last = s;
@@ -101,12 +101,25 @@ impl Cube {
             indices[i] = last_i as u16;
         }
         let bits = bits_for(palette.len());
-        let mut words = vec![0u64; VOLUME * bits as usize / 64].into_boxed_slice();
-        for (i, &p) in indices.iter().enumerate() {
-            put(&mut words, bits, i, p as u32);
-        }
+        // A word at a time, like `decode`.
+        let words: Box<[u64]> = indices.chunks_exact(64 / bits as usize).map(|group| group.iter().enumerate().fold(0u64, |w, (k, &p)| w | (p as u64) << (k as u32 * bits))).collect();
         c.blocks = Blocks::Packed { palette, bits, words };
         c
+    }
+
+    /// Every block's position in `palette()`, without looking its state up there.
+    pub fn palette_indices(&self, out: &mut [u8; VOLUME]) {
+        match &self.blocks {
+            Blocks::Uniform(_) => out.fill(0),
+            Blocks::Packed { bits, words, .. } => {
+                let (per, mask) = (64 / *bits as usize, (1u64 << *bits) - 1);
+                for (w, &word) in words.iter().enumerate() {
+                    for k in 0..per {
+                        out[w * per + k] = ((word >> (k as u32 * *bits)) & mask) as u8;
+                    }
+                }
+            }
+        }
     }
 
     #[inline]

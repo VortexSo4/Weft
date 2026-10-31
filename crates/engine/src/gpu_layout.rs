@@ -86,6 +86,16 @@ shared! {
         TEX_MASK = 0xFFFF,
         SLOT_SHIFT = 24,
     }
+    /// What each entry of the sky list draws (`sky.wgsl`).
+    sky {
+        BODY = 0,
+        STARS = 1,
+        DOME = 2,
+        GRADIENT = 3,
+        GLOW = 4,
+        OVERLAY = 5,
+        CLOUDS = 6,
+    }
 }
 
 /// Terrain on the GPU (`terrain.wgsl`, `client::terrain_gpu`): the layout of the description,
@@ -385,8 +395,28 @@ gpu_struct! {
         /// wraps every 2^20).
         pub light: [f32; 4],
         /// xyz toward the sun (unit), w how far it is above the horizon (0 under it or in a
-        /// dimension without sky light). For shader packs: the engine draws no sun.
+        /// dimension without sky light). For shader packs' shadows; follows the day, whatever
+        /// bodies mods put in the sky.
         pub sun: [f32; 4],
+    }
+}
+
+gpu_struct! {
+    /// One thing drawn in the sky. The first entry is always the gradient, and its `axes` turn a
+    /// screen position into a direction for everything that fills the screen.
+    pub struct GpuSky as "Sky" {
+        /// Columns: its own frame in the world, x toward it (`sky.wgsl`).
+        pub axes: [[f32; 4]; 3],
+        /// Picture rectangle: u0, v0, u1, v1. Dome: x 1 for a box layout. Glow: x how far along
+        /// the sunset it is, 0..1. Stars: x half their size, y the seed.
+        pub uv: [f32; 4],
+        /// Linear rgb and opacity.
+        pub color: [f32; 4],
+        /// x bindless picture (`u32::MAX` none), y `sky` kind, z shader slot, w 1 if additive.
+        pub ids: [u32; 4],
+        /// x half size across (a body's tangent). Overlay: x tiles across, y 1 for the screen's
+        /// lower part only, z where its frame starts in the picture.
+        pub extra: [f32; 4],
     }
 }
 
@@ -614,6 +644,10 @@ bindings! {
         PARTICLES "particles": "array<Particle>",
         SCENE "scene": "Scene",
     }
+    sky "sky.wgsl" {
+        OBJECTS "sky": "array<Sky>",
+        SCENE "scene": "Scene",
+    }
     ui "ui.wgsl" {
         QUADS "quads": "array<Quad>",
         SCREEN "screen": "Screen",
@@ -644,7 +678,7 @@ fn solid_at(p: vec3<i32>) -> bool {
 
 /// Every GPU struct as WGSL.
 fn structs() -> String {
-    [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
+    [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), GpuSky::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
 }
 
 /// What goes in front of an engine shader (or a pack's replacement of it): the constants, every
@@ -730,6 +764,7 @@ mod tests {
             ("Corner", size_of::<GpuCorner>()),
             ("Bone", size_of::<GpuBone>()),
             ("Particle", size_of::<GpuParticle>()),
+            ("Sky", size_of::<GpuSky>()),
             ("Quad", size_of::<Quad>()),
             ("Screen", size_of::<Screen>()),
             ("Pass", size_of::<Pass>()),

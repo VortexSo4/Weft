@@ -445,6 +445,10 @@ pub unsafe extern "C" fn client_block(c: *mut abi::ClientCtx, pos: *const [i32; 
     unsafe { client(c).map_or(u32::MAX, |cl| cl.world.block(IVec3::from_array(*pos))) }
 }
 
+pub unsafe extern "C" fn client_cube_shown(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
+    unsafe { client(c).is_some_and(|cl| cl.world.cube_shown(crate::world::cube_of(IVec3::from_array(*pos)))) as u32 }
+}
+
 pub unsafe extern "C" fn client_light(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
     unsafe {
         let p = IVec3::from_array(*pos);
