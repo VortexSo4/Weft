@@ -462,9 +462,9 @@ impl Dim {
     /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
     /// they differ, so they travel like mods' components. Absent ones stay absent while default.
     pub fn mirror_fields(&mut self, c: &Content) {
-        let [health, burning, worn, shape] = c.game.field_comps;
+        let [health, burning, worn, shape, held] = c.game.field_comps;
         let maxes: Vec<(u64, f32)> = self.entities.list.iter().filter(|e| e.player && !e.removed).map(|e| e.id).collect::<Vec<_>>().into_iter().map(|id| (id, self.max_health(c, id))).collect();
-        let Entities { list, comps, .. } = &mut self.entities;
+        let Entities { list, comps, inventories, .. } = &mut self.entities;
         for e in list.iter().filter(|e| !e.removed && e.anchor.is_none() && e.kind != c.game.virtual_kind) {
             let put = |comps: &mut FxHashMap<(u64, u32), Box<[u8]>>, comp: u32, bytes: &[u8]| match comps.get_mut(&(e.id, comp)) {
                 Some(v) if **v != *bytes => *v = bytes.into(),
@@ -488,6 +488,10 @@ impl Dim {
             }
             sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
             put(comps, shape, &sh);
+            if e.player {
+                let item = inventories.get(&e.id).and_then(|i| i.get(e.selected as usize)).filter(|s| !s.is_empty()).map_or(0, |s| s.item);
+                put(comps, held, &item.to_le_bytes());
+            }
         }
     }
 

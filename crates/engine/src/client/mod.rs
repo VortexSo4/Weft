@@ -98,6 +98,8 @@ pub struct ClientEntity {
     pub health: f32,
     pub hurt: f32,
     pub worn: Vec<u32>,
+    /// A player's item in hand, 0 for none.
+    pub held: u32,
     /// Accumulated walk distance and current swing amplitude, for limb animation.
     pub walk: f32,
     /// Blocks actually walked, which limbs at full swing fall behind of.
@@ -1440,7 +1442,7 @@ impl Client {
     /// Copies an engine field component into the entity (or the own player) that shows it.
     fn engine_field(&mut self, id: u64, comp: u32, bytes: &[u8]) {
         let c = content();
-        let [health, burning, worn, shape] = c.game.field_comps;
+        let [health, burning, worn, shape, held] = c.game.field_comps;
         let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
         let shaped = || {
             let size = (f.len() == 4 && f[0] > 0.0).then(|| [f[0], f[1], f[2]]);
@@ -1478,6 +1480,8 @@ impl Client {
             e.burning = bytes.first().is_some_and(|&b| b != 0);
         } else if comp == worn {
             e.worn = words(bytes).map(u32::from_le_bytes).collect();
+        } else if comp == held {
+            e.held = words(bytes).next().map_or(0, u32::from_le_bytes);
         } else if comp == shape {
             (e.size, e.look) = shaped();
         }
@@ -1604,6 +1608,7 @@ impl Client {
             health: self.health,
             hurt: self.hurt_flash,
             worn,
+            held: self.held().item,
             walk: self.self_walk,
             walked: self.self_walk,
             swing: self.self_swing,

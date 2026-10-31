@@ -1162,10 +1162,15 @@ impl ItemBuilder<'_> {
         self.set(&c::DURABILITY, d).set(&c::MAX_STACK, 1)
     }
     /// A tool of `class` (tag `tools/<class>`): it mines blocks `mineable/<class>`, at its
-    /// `mining_speed`, those needing up to its `tool_level`.
+    /// `mining_speed`, those needing up to its `tool_level`. Held like one (`handheld`).
     pub fn tool(self, class: &str) -> Self {
         let tag = format!("tools/{class}");
-        self.tag(&tag)
+        self.tag(&tag).handheld()
+    }
+    /// Held like a tool in third person, by its end and pointing ahead (tag `handheld`, vanilla's
+    /// `item/handheld` model), instead of flat in the hand. Tools have it already.
+    pub fn handheld(self) -> Self {
+        self.tag("handheld")
     }
     /// The highest `needs_tool` level it harvests (`abi::tool_tier`: wood 0 ... diamond 300).
     pub fn tool_level(self, level: u32) -> Self {

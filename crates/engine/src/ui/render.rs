@@ -627,10 +627,12 @@ impl UiRenderer {
             let ch = |s: u32| (((c >> s) & 255) as f32 * k) as u32;
             ch(24) << 24 | ch(16) << 16 | ch(8) << 8 | 0xFF
         };
-        // Isometric: block point (X, Y, Z) lands at origin + X*ex + Y*ey + Z*ez.
-        let (h, q) = (size / 2.0, size / 4.0);
-        let o = [x + h, y + size * 0.03 + h];
-        let at = |p: [f32; 3]| [o[0] + (p[0] - p[2]) * h, o[1] + (p[0] + p[2]) * q - p[1] * h];
+        // As block.json shows it in a slot: rotation 30 225 0, scale 0.625, the block's middle in
+        // the middle. Along x or z a block goes cos 45 across and sin 30 sin 45 down, up it goes
+        // cos 30, all times 0.625.
+        let (h, q, up) = (size * 0.625 * 0.707_106_8, size * 0.625 * 0.353_553_4, size * 0.625 * 0.866_025_4);
+        let o = [x + size / 2.0, y + size / 2.0];
+        let at = |p: [f32; 3]| [o[0] + (p[0] - p[2]) * h, o[1] + (p[0] + p[2] - 1.0) * q - (p[1] - 0.5) * up];
         let grass = crate::content::item_tint(s.tint) << 8 | 0xFF;
         let mut shape = boxes.to_vec();
         // Back to front.
@@ -641,8 +643,8 @@ impl UiRenderer {
             // (corner, u edge, v edge, face, shade, uv rect): the faces seen from the front, with
             // the part of the texture the world mesher shows there.
             let faces = [
-                (at([n[0], m[1], m[2]]), [dx * h, dx * q], [0.0, dy * h], 5, 0.8, [n[0], 1.0 - m[1], m[0], 1.0 - n[1]]),
-                (at([m[0], m[1], m[2]]), [dz * h, -dz * q], [0.0, dy * h], 1, 0.62, [1.0 - m[2], 1.0 - m[1], 1.0 - n[2], 1.0 - n[1]]),
+                (at([n[0], m[1], m[2]]), [dx * h, dx * q], [0.0, dy * up], 5, 0.8, [n[0], 1.0 - m[1], m[0], 1.0 - n[1]]),
+                (at([m[0], m[1], m[2]]), [dz * h, -dz * q], [0.0, dy * up], 1, 0.62, [1.0 - m[2], 1.0 - m[1], 1.0 - n[2], 1.0 - n[1]]),
                 (at([n[0], m[1], n[2]]), [dx * h, dx * q], [-dz * h, dz * q], 3, 1.0, [n[0], n[2], m[0], m[2]]),
             ];
             for (p0, u, v, face, k, uv) in faces {

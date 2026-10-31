@@ -62,6 +62,11 @@ pub async fn hide_hud(t: T) -> R {
 
 /// Items in the first person hand: each drawn in its own colors at the hand's place.
 pub async fn held_items(t: T) -> R {
+    // Tools by being tools, the rest by asking.
+    static HANDHELD: Tag = Tag::named("handheld");
+    let handheld = |name: &str| Item::lookup(name).is_some_and(|i| HANDHELD.on_item(i));
+    t.check(handheld("base:diamond_sword") && handheld("base:wood_pickaxe") && handheld("base:stick") && handheld("testmod:steel_pickaxe"), "tools and the stick are held like tools");
+    t.check(!handheld("base:apple") && !handheld("base:stone"), "the rest are not");
     t.flat().await?;
     for (i, name) in ["wood_pickaxe", "diamond_sword", "glass", "rose", "torch"].iter().enumerate() {
         t.op(&format!("put me {i} {name} 1")).await?;
@@ -443,6 +448,13 @@ pub async fn multiplayer(t: T) -> R {
         .until("the second player's chat", Duration::from_secs(90), |t| (0..5).any(|i| t.c().chat_line(i).contains("hello from the second player")))
         .await;
     let seen = t.c().entities().iter().filter_map(|&id| t.c().entity(id)).any(|e| name_of(abi::entry_kind::ENTITY, e.kind) == "core:player");
+    // What they hold reaches the others, to draw it in their hand.
+    static HELD: weft_sdk::Component<u32> = weft_sdk::Component::named("core:held");
+    if let Some(other) = t.c().entities().iter().copied().find(|&id| t.c().entity(id).is_some_and(|e| name_of(abi::entry_kind::ENTITY, e.kind) == "core:player")) {
+        t.op(&format!("put {other} 0 stone 1")).await?;
+        let stone = Item::lookup("base:stone").unwrap_or(u32::MAX);
+        t.until("what the other player holds", Duration::from_secs(5), |t| t.c().view().component_of(other, &HELD) == Some(stone)).await?;
+    }
     // A synced setting the host changes while the other player is in reaches them.
     SPARKS.set(7);
     let synced = t.until("the second player's config", Duration::from_secs(30), |t| (0..5).any(|i| t.c().chat_line(i).contains("config testmod:wisp_sparks = 7"))).await;

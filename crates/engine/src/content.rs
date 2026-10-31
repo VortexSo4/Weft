@@ -195,6 +195,8 @@ pub struct ItemDef {
     pub order: u64,
     /// The player's equipment slot it is worn in (`worn/<slot>` tag), by index.
     pub equip: Option<u32>,
+    /// Held like a tool in third person (`handheld` tag).
+    pub handheld: bool,
     /// Boxes from its model file (`models/item/<name>.json`) in block units, drawn instead of
     /// the icon in hands, on the ground and in slots; empty: none.
     pub model: Vec<ModelBox>,
@@ -1563,6 +1565,7 @@ fn number_items(mods: &[ModMeta], items: Vec<(ModId, RawItem)>, blocks: &BlockTa
         on_use: None,
         order: 0,
         equip: None,
+        handheld: false,
         model: Vec::new(),
     }];
     let mut item_values: Vec<(ModId, Vec<RawValue>)> = vec![(ModId(u32::MAX), Vec::new())];
@@ -1622,6 +1625,7 @@ fn number_items(mods: &[ModMeta], items: Vec<(ModId, RawItem)>, blocks: &BlockTa
             on_use: it.on_use,
             order: (mods[owner.0 as usize].order as u64) << 32 | it.seq as u64,
             equip: None,
+            handheld: false,
             model,
         });
     }
@@ -1747,7 +1751,7 @@ fn declare_components(
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
-    for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::SHAPE, "bytes"), (crate::registry::SIMULATED, "u64")] {
+    for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::HELD, "u32"), (crate::registry::SHAPE, "bytes"), (crate::registry::SIMULATED, "u64")] {
         cb.declare(name, schema, None, &|| "the engine".into(), errors);
     }
     for g in games {
@@ -2326,8 +2330,14 @@ fn link_entity_templates(game: &mut crate::registry::Game, templates: &[Template
     }
 }
 
-/// Items worn in an equipment slot carry its `worn/<slot>` tag.
+/// Items worn in an equipment slot carry its `worn/<slot>` tag, and the ones held like tools
+/// `handheld`.
 fn link_equipment(game: &crate::registry::Game, item_defs: &mut [ItemDef], components: &Components) {
+    if let Some(t) = components.id("handheld") {
+        for (i, d) in item_defs.iter_mut().enumerate() {
+            d.handheld = components.has(comps::ITEM, i as u32, t);
+        }
+    }
     for (e, slot) in game.player_layout.equipment.iter().enumerate() {
         if let Some(t) = components.id(&format!("worn/{}", slot.name)) {
             for (i, d) in item_defs.iter_mut().enumerate() {

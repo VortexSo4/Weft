@@ -378,6 +378,8 @@ pub struct Motion<'a> {
     pub anims: &'a [(&'a Bound, f32, f32)],
     /// Vanilla's sneaking pose for bipeds (the bones Bedrock names `body`, arms, legs, head).
     pub crouch: bool,
+    /// Something in its hand: that arm hangs a little forward and swings less (`ArmPose.ITEM`).
+    pub holding: bool,
 }
 
 /// (about x, about y) added to a part's rest (`rest_x` about x) by its role.
@@ -439,14 +441,17 @@ pub fn pose(parts: &[Part], root: Mat4, m: &Motion, out: &mut Vec<Mat4>) {
         if let Some(stroke) = m.swim.and_then(|limb| swim_angles(p.role, limb)) {
             rot = stroke;
         }
-        // Vanilla's setupAttackAnimation: up, across and down, higher the higher it looks. The bone
-        // named `rightArm` has this role.
-        if m.attack > 0.0 && p.role == role::ARM_LEFT {
+        if m.holding && m.swim.is_none() && p.role == role::ARM_RIGHT {
+            rot.x = rot.x * 0.5 + std::f32::consts::PI / 10.0;
+        }
+        // Vanilla's setupAttackAnimation: up, across and down, higher the higher it looks. The arm
+        // at +x, which is the right one looking from behind (`hand_bone`) whatever its bone's name.
+        if m.attack > 0.0 && p.role == role::ARM_RIGHT {
             use std::f32::consts::PI;
             let eased = 1.0 - (1.0 - m.attack).powi(4);
             let across = (m.attack * PI).sin();
             rot.x += (eased * PI).sin() * 1.2 + across * (m.pitch + 0.7) * 0.75;
-            rot.z += across * 0.4;
+            rot.z -= across * 0.4;
         }
         if m.crouch {
             // ModelBiped.isSneak: body leans 0.5 forward, arms 0.4 more, legs move up 3 and back
@@ -509,7 +514,7 @@ mod tests {
         assert!(parts[1].cuboids[0].mirror && parts[2].mesh.len() == 6);
         // A Bedrock arm at x = -90 points forward (-Z): its hand ends up in front of the shoulder.
         let mut mats = Vec::new();
-        pose(&parts, Mat4::IDENTITY, &Motion { pitch: 0.0, head_yaw: 0.0, swing: 0.0, swim: None, attack: 0.0, anims: &[], crouch: false }, &mut mats);
+        pose(&parts, Mat4::IDENTITY, &Motion { pitch: 0.0, head_yaw: 0.0, swing: 0.0, swim: None, attack: 0.0, holding: false, anims: &[], crouch: false }, &mut mats);
         let hand = mats[1].transform_point3(Vec3::new(-6.0, 12.0, 0.0));
         assert!(hand.z < -8.0 && (hand.y - 22.0).abs() < 0.01, "{hand}");
 

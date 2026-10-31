@@ -340,8 +340,8 @@ pub struct Game {
     pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
-    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`.
-    pub field_comps: [u32; 4],
+    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`.
+    pub field_comps: [u32; 5],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -1075,11 +1075,13 @@ pub const MODIFIERS: &str = "core:modifiers";
 pub const TIMERS: &str = "core:timers";
 /// Engine fields clients show, kept as synced components (`Dim::mirror_fields`): health and
 /// max health (`[f32; 2]`, max only for players), on fire (`u8`), worn items (`u32` each), own
-/// size and look (`[f32; 3]` with width 0 for the kind's, `u32` kind with `u32::MAX` for its own).
+/// size and look (`[f32; 3]` with width 0 for the kind's, `u32` kind with `u32::MAX` for its own),
+/// a player's item in hand (`u32`, 0 for none).
 pub const HEALTH: &str = "core:health";
 pub const BURNING: &str = "core:burning";
 pub const WORN: &str = "core:worn";
 pub const SHAPE: &str = "core:shape";
+pub const HELD: &str = "core:held";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -1421,7 +1423,7 @@ pub fn freeze(
     let mut shape = vec![0u8; 12];
     shape.extend(u32::MAX.to_le_bytes());
     let save = weft_abi::component_flags::SAVE;
-    for (name, size, flags, default) in [(HEALTH, 8, own, vec![0; 8]), (BURNING, 1, shown, vec![0]), (WORN, 0, shown, Vec::new()), (SHAPE, 16, own, shape), (SIMULATED, 8, save, vec![0; 8])] {
+    for (name, size, flags, default) in [(HEALTH, 8, own, vec![0; 8]), (BURNING, 1, shown, vec![0]), (WORN, 0, shown, Vec::new()), (SHAPE, 16, own, shape), (HELD, 4, shown, vec![0; 4]), (SIMULATED, 8, save, vec![0; 8])] {
         components.push(RawComponent { owner: ENGINE, def: ComponentDef { name: name.into(), size, flags, default, runtime: true }, schema: String::new() });
     }
     for rc in components {
@@ -1433,7 +1435,7 @@ pub fn freeze(
     g.modifiers_comp = g.component_names[MODIFIERS];
     g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
-    g.field_comps = [HEALTH, BURNING, WORN, SHAPE].map(|n| g.component_names[n]);
+    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD].map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| g.components.iter().enumerate().filter(|(_, d)| d.runtime && d.flags & f != 0).map(|(i, _)| i as u32).collect::<Vec<u32>>();
     g.watched_comps = with_flag(abi::component_flags::SYNC_WATCHERS);

@@ -258,6 +258,7 @@ impl Client {
                     health: f32::NAN,
                     hurt: 0.0,
                     worn: Vec::new(),
+                    held: 0,
                     walk: 0.0,
                     walked: 0.0,
                     swing: 0.0,

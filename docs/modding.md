@@ -194,7 +194,7 @@ Per-entity components like a state of a machine, hunger or anything else that ch
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
-What the engine itself shows of an entity travels the same way, so a client can read it with `view.component_of(id, &C)`: `core:health` (`[f32; 2]`, health and, for players, max health) and `core:burning` (`u8`). They are the engine's copies: writing them changes nothing.
+What the engine itself shows of an entity travels the same way, so a client can read it with `view.component_of(id, &C)`: `core:health` (`[f32; 2]`, health and, for players, max health) `core:burning` (`u8`) and `core:held` (`u32`, a player's item in hand, 0 for none). They are the engine's copies: writing them changes nothing.
 
 ### Sharing types with other mods
 Events and components carry values, and two mods have to agree on their layout. Copying a struct into every mod works, but the mistake shows up only when the game loads.
@@ -246,6 +246,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `no_creative_break()`: in creative it doesn't break blocks, like a sword. Both sides know, so nothing flickers; a rule that depends on more is `question::BREAK_BLOCK`, which is asked when mining starts and tells the client no right away
 - `spawns(&ENTITY)`: used on a block it puts the entity there. Every entity already has an egg of its own, see below
 - `placed_block(&BLOCK)`
+- `handheld()`: held by its end and pointing ahead in third person, like a stick. `tool(..)` does it already, and so does the tag `handheld`
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
 - `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it). `base_api::eat` is the base game's eating: `.set(&FOOD, ..).use_ticks(32).on_use(base_api::eat)`
 

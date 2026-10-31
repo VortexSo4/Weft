@@ -362,6 +362,10 @@ impl EntityRenderer {
                     self.load(gpu, assets, t);
                 }
             }
+            if e.held != 0 && seen_items.get(e.held as usize).is_some_and(|s| !s) {
+                seen_items[e.held as usize] = true;
+                self.load_sprite(assets, e.held);
+            }
         }
         self.seen_kinds = seen;
         self.seen_items = seen_items;
@@ -552,7 +556,7 @@ impl EntityRenderer {
         let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-        self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, head_yaw: 0.0, swing: 0.0, swim: None, attack: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
+        self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, head_yaw: 0.0, swing: 0.0, swim: None, holding: false, attack: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
         let vb = self.preview[frame.slot];
         // Full daylight, no fog.
         let v = Scene { view_proj: proj.to_cols_array_2d(), params: [1e9, 2e9, 1.0, crate::shaders::time()], ..Default::default() };
@@ -602,6 +606,8 @@ impl EntityRenderer {
         // Models: bones posed here (in parallel when many), drawn instanced per kind.
         let mut posed = std::mem::take(&mut self.posed);
         posed.clear();
+        // Who holds something: its place in `posed`, the item and its light.
+        let mut holders: Vec<(usize, u32, u32)> = Vec::new();
         for (id, e) in entities.iter().map(|(i, e)| (*i, e)).chain(me.map(|m| (self.local, m))) {
             let base = rel(e.pos);
             if base.length_squared() > 160.0 * 160.0 {
@@ -666,11 +672,26 @@ impl EntityRenderer {
             // Its head up to look ahead, and limbs by the swimming stroke.
             let swim_limbs = lying.map(|_| e.walk * 4.0);
             let (pitch, head_yaw) = if lying.is_some() { (std::f32::consts::FRAC_PI_4, 0.0) } else { (e.pitch, e.yaw - e.body_yaw) };
-            posed.push(Posed { kind, root, pitch, head_yaw, swing, crouch: e.pose == crate::world::Pose::Crouch, swim: swim_limbs, attack: e.arm_swing.unwrap_or(0.0), anims, anim_count, layers, layer_count });
+            posed.push(Posed { kind, root, pitch, head_yaw, swing, crouch: e.pose == crate::world::Pose::Crouch, swim: swim_limbs, attack: e.arm_swing.unwrap_or(0.0), holding: e.held != 0, anims, anim_count, layers, layer_count });
+            if e.held != 0 {
+                holders.push((posed.len() - 1, e.held, lit));
+            }
         }
         let vb = scene_buf;
         self.models.begin();
+        let first_bone = self.models.bones_so_far();
         self.models.add_many(&posed);
+        let (mut at, mut next) = (first_bone, 0);
+        for (holder, item, lit) in holders {
+            at += posed[next..holder].iter().filter_map(|p| self.models.kinds.get(p.kind as usize)).map(|m| m.parts.len()).sum::<usize>();
+            next = holder;
+            let parts = self.models.kinds.get(posed[holder].kind as usize).map(|m| m.parts.as_slice()).unwrap_or_default();
+            let Some(i) = parts.iter().position(|p| p.role == crate::model::role::ARM_RIGHT) else { continue };
+            let arm = self.models.bone(at + i) * Mat4::from_translation(Vec3::from_array(parts[i].pivot));
+            if let Some(m) = self.item_model(textures, item) {
+                instances.push((item, item_instance(held_transform(arm, item), m.0, 0.0, lit)));
+            }
+        }
         self.posed = posed;
         self.models.draw(gpu, list, frame, super::models::Batch::World, self.model_pipe, vb);
 
@@ -1014,6 +1035,34 @@ fn shows_block(item: u32) -> bool {
     let c = content();
     let reshaped = super::looks::current().item(item).is_some_and(|l| l.model.is_some());
     c.items.get(item as usize).is_some_and(|d| reshaped || !d.model.is_empty() || (d.icon == u32::MAX && d.block.is_some_and(|st| c.states[st as usize].item_sprite().is_none())))
+}
+
+/// Where an item goes in the hand of a model, from its arm at the shoulder (pixels): vanilla's
+/// ItemInHandLayer, then the item model's third person display transform. Vanilla's model space is
+/// ours turned around z, and it measures from a shoulder one pixel closer to the body.
+fn held_transform(arm: Mat4, item: u32) -> Mat4 {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let deg = |d: f32| d.to_radians();
+    let hand = arm
+        * Mat4::from_scale(Vec3::splat(16.0))
+        * Mat4::from_rotation_z(PI)
+        * Mat4::from_rotation_x(-FRAC_PI_2)
+        * Mat4::from_rotation_y(PI)
+        * Mat4::from_translation(Vec3::new(0.0, 0.125, -0.625));
+    // block.json, handheld.json and generated.json: rotation, translation, scale.
+    let ([rx, ry, rz], move_by, scale) = if shows_block(item) {
+        ([75.0, 45.0, 0.0], [0.0, 2.5, 0.0], 0.375)
+    } else if content().items.get(item as usize).is_some_and(|d| d.handheld) {
+        ([0.0, -90.0, 55.0], [0.0, 4.0, 0.5], 0.85)
+    } else {
+        ([0.0, 0.0, 0.0], [0.0, 3.0, 1.0], 0.55)
+    };
+    hand * Mat4::from_translation(Vec3::from_array(move_by) / 16.0)
+        * Mat4::from_rotation_x(deg(rx))
+        * Mat4::from_rotation_y(deg(ry))
+        * Mat4::from_rotation_z(deg(rz))
+        * Mat4::from_scale(Vec3::splat(scale))
+        * Mat4::from_translation(Vec3::splat(-0.5))
 }
 
 /// Dropped items spin and bob: a block a quarter of a block across, a sprite half a block
