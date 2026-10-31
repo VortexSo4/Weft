@@ -1,7 +1,26 @@
+use arboard::Clipboard;
+use std::sync::{Mutex, OnceLock};
+
+static CLIPBOARD: OnceLock<Mutex<Clipboard>> = OnceLock::new();
+
+/// Returns the clipboard, creating it on first success.
+/// If creation fails, the next call tries again.
+fn clipboard() -> Option<&'static Mutex<Clipboard>> {
+    if let Some(c) = CLIPBOARD.get() {
+        return Some(c);
+    }
+
+    let new = Clipboard::new().ok()?;
+    Some(CLIPBOARD.get_or_init(|| Mutex::new(new)))
+}
+
 pub fn get() -> Option<String> {
-    arboard::Clipboard::new().ok()?.get_text().ok()
+    clipboard()?.lock().ok()?.get_text().ok()
 }
 
 pub fn set(text: &str) -> bool {
-    arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())).is_ok()
+    clipboard()
+        .and_then(|c| c.lock().ok())
+        .map(|mut c| c.set_text(text).is_ok())
+        .unwrap_or(false)
 }
