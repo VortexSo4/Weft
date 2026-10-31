@@ -8,6 +8,7 @@ pub static DIAMOND: Item = Item::named("diamond");
 pub static WHEAT_SEEDS: Item = Item::named("wheat_seeds");
 pub static WHEAT: Item = Item::named("wheat");
 pub static BUCKET: Item = Item::named("bucket");
+pub static SHEARS: Item = Item::named("shears");
 
 pub use base_api::{ARMOR, Armor, FLAMMABLE, FOOD, FUEL, Food};
 /// Tags of armor pieces, head to feet; `<tag>/<material>` picks the recipe (see recipes.rs).
@@ -45,6 +46,8 @@ pub fn register(r: &mut Registry) {
     r.set("lava_bucket", &FUEL, 20000);
     r.tag("buckets/lava", &["lava_bucket"]);
     r.tag("bread", &["bread"]);
+    // Leaves are mineable with them, and drop themselves only to them (blocks.rs).
+    r.item(&SHEARS).max_stack(1).durability(238).tool("shears").mining_speed(15.0).attack_damage(1.0).tab(&crate::tabs::TOOLS);
 
     for (name, hunger, saturation, tag) in [
         ("apple", 4, 2.4, ""),
@@ -85,6 +88,8 @@ pub fn register(r: &mut Registry) {
                 .tab(if kind == "sword" { &crate::tabs::COMBAT } else { &crate::tabs::TOOLS });
             if kind == "sword" {
                 b.sweeps().no_creative_break();
+            } else if kind == "hoe" {
+                b.on_use(crate::player::till);
             }
         };
         tool(r, "pickaxe", 2.0 + m.damage, 1.2);

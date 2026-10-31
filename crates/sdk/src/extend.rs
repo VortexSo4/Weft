@@ -247,6 +247,12 @@ impl Cond {
     pub fn tool_tag(t: &str) -> Cond {
         Cond::ToolTag(t.to_string())
     }
+
+    /// The opposite: tables that should not roll for a tool holding this tag.
+    pub fn not_tool_tag(t: &str) -> Cond {
+        Cond::NotToolTag(t.to_string())
+    }
+
     fn raw(&self) -> (u32, f32, &str) {
         use abi::loot_cond as k;
         match self {

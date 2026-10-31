@@ -314,3 +314,22 @@ mod tests {
         assert_eq!(air_bubbles(-5.0), 0.0);
     }
 }
+
+/// A hoe turns grass, snow-covered grass and dirt into farmland when nothing stands on top.
+pub fn till(u: &mut ItemUse) -> bool {
+    let Some((pos, _)) = u.target() else { return false };
+    let w = u.world();
+    let state = w.get(pos);
+    let soil = crate::blocks::GRASS.is(state) || crate::blocks::SNOWY_GRASS.is(state) || crate::blocks::DIRT.is(state);
+    if !soil || w.get([pos[0], pos[1] + 1, pos[2]]) != 0 {
+        return false;
+    }
+    w.set(pos, crate::blocks::FARMLAND.id());
+    let stack = u.stack();
+    let durability = DURABILITY.on_item(stack.item).unwrap_or(0);
+    if durability > 0 {
+        let damage = stack.damage() + 1;
+        u.set_stack(if damage >= durability { ItemStack::EMPTY } else { stack.with_damage(damage) });
+    }
+    true
+}
