@@ -10,3 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 weft_sdk.workspace = true
 base_api.workspace = true
+
+[package.metadata.weft]
+dist = false
