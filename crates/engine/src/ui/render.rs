@@ -804,7 +804,10 @@ impl UiRenderer {
                 } else {
                     ""
                 };
-                background(self, class, state);
+                // No class: nothing of its own, only what it contains.
+                if !class.is_empty() {
+                    background(self, class, state);
+                }
             }
             Kind::Text(t) => {
                 let px = scale * ui.text_unit * t.scale;

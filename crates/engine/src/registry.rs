@@ -48,13 +48,14 @@ impl Cuboid {
         }
         let [w, h, d] = self.size;
         let [u, v] = self.uv;
-        // The sides run from the back to the front edge, as they lie beside the front in the
-        // unwrap, so they are read right to left.
+        // Wrapped around the box as they lie in the unwrap: seen from the front (-Z), what is left
+        // of it there is on its left, which is +X. The top lies above the front, so it is turned
+        // to meet it. As Blockbench does it.
         let mut r = [
-            [u + d, v + d, -d, h],
-            [u + d * 2.0 + w, v + d, -d, h],
+            [u + d + w, v + d, d, h],
+            [u, v + d, d, h],
             [u + d + w, v, w, d],
-            [u + d, v, w, d],
+            [u + d + w, v + d, -w, -d],
             [u + d, v + d, w, h],
             [u + d * 2.0 + w, v + d, w, h],
         ];
@@ -1249,9 +1250,8 @@ pub fn freeze(
     }
     freeze_particles(&mut g, particles, errors);
     freeze_sky(&mut g, sky, dim_names, errors);
-    // Volume settings right after the master volume.
     let volumes: Vec<(usize, crate::config::ConfigDef)> = sound_categories.iter().filter_map(|k| k.setting.as_deref()).map(|s| (0, crate::config::volume(s))).collect();
-    configs.splice(1..1, volumes);
+    configs.extend(volumes);
     sounds.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (cell, mut d) in sounds {
         let category = if d.category_name.is_empty() { "core:blocks" } else { &d.category_name };
@@ -1821,6 +1821,33 @@ fn expand_variables(r: RawRecipe, tags: &FxHashMap<&str, u32>) -> Result<Vec<Raw
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod box_unwrap {
+    use super::Cuboid;
+
+    fn arm(mirror: bool) -> [[f32; 4]; 6] {
+        Cuboid { origin: [0.0; 3], size: [4.0, 12.0, 4.0], uv: [40.0, 16.0], inflate: 0.0, mirror, faces: None }.face_rects()
+    }
+
+    #[test]
+    fn wraps_around_the_box() {
+        let r = arm(false);
+        // Each side's edge meets the same edge of the strip beside it in the unwrap.
+        assert_eq!(r[1], [40.0, 20.0, 4.0, 12.0], "+X, left of the front");
+        assert_eq!(r[4], [44.0, 20.0, 4.0, 12.0], "-Z, the front");
+        assert_eq!(r[0], [48.0, 20.0, 4.0, 12.0], "-X, right of the front");
+        assert_eq!(r[5], [52.0, 20.0, 4.0, 12.0], "+Z, the back");
+        assert_eq!(r[3], [48.0, 20.0, -4.0, -4.0], "the top, meeting the front");
+    }
+
+    #[test]
+    fn mirrored_is_the_other_side_read_backwards() {
+        let r = arm(true);
+        assert_eq!(r[0], [44.0, 20.0, -4.0, 12.0], "-X has what +X had");
+        assert_eq!(r[4], [48.0, 20.0, -4.0, 12.0], "the front flipped");
+    }
 }
 
 #[cfg(test)]

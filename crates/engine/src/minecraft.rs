@@ -350,6 +350,7 @@ mod tests {
         let sun = crate::assets::decode_png(&std::fs::read(sky.join("sky/sun.png")).unwrap()).unwrap();
         assert_eq!(sun.rgba[3], 0, "the corner of the sun is transparent");
         assert!(sky.join("gui/attack_bar_fill.png").is_file());
+        assert!(sky.join("entity/armor/leather_1.png").is_file(), "worn armor comes from the pack too");
     }
 
     #[test]

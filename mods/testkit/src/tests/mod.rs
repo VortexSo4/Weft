@@ -79,6 +79,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::beds_far,
         gameplay::spawn_eggs,
         gameplay::dedicated_server,
+        gameplay::base_alone,
         ui::mods_switch,
         gameplay::toast_with_the_gui,
         gameplay::advancements_by_tags,

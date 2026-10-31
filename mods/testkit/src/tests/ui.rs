@@ -627,6 +627,10 @@ pub async fn mods_switch(t: T) -> R {
     t.check(t.click_ui("id:mod_led:testmod", 0), "a LED for the mod");
     t.until("the restart button comes", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_some()).await?;
     t.check(std::fs::read_to_string(&file).unwrap_or_default().contains("testmod"), "it is written down");
+    // The LED is in the mod's row, and clicking it isn't clicking the row.
+    let (led, row) = (t.c().ui_rect("id:mod_led:testmod").ok_or("no LED")?, t.c().ui_rect("id:mod:testmod").ok_or("no row")?);
+    t.check(led[0] > row[0] && led[0] + led[2] <= row[0] + row[2] + 0.001, format!("the LED {led:?} inside its row {row:?}"));
+    t.check(t.c().ui_rect("text:Needs").is_none(), "the row isn't selected by it (only testmod needs something)");
     t.shot("switched").await?;
     t.check(t.click_ui("id:mod_led:testmod", 0), "and back");
     t.until("nothing to restart for again", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_none()).await?;

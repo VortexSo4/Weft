@@ -110,6 +110,8 @@ fn start(c: &Client) {
         runner::start(vec![runner::TestDef { name, run: Box::new(move |t| Box::pin(script::run(t, src.clone()))) }]);
         return;
     }
+    // Before the first test too, so that it starts with them in force.
+    same_conditions(c);
     let want = test.as_deref().unwrap_or("all");
     // Benchmarks run by name too, or all of them with `bench`.
     let all = match want {

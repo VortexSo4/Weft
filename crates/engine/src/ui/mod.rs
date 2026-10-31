@@ -693,27 +693,25 @@ impl Ui {
 
     /// Deepest interactive node under the cursor.
     pub fn hit(&self, p: Vec2) -> Option<NodeId> {
-        fn walk(ui: &Ui, id: NodeId, p: Vec2, best: &mut Option<NodeId>) {
+        fn walk(ui: &Ui, id: NodeId, p: Vec2, in_button: bool, best: &mut Option<NodeId>) {
             let n = &ui.nodes[id];
             if (!n.rect.contains(p) || n.clip.is_some_and(|c| !c.contains(p))) && id != 0 {
                 return;
             }
-            let interactive = matches!(n.kind, Kind::Button { .. } | Kind::Input { .. } | Kind::Slider { .. } | Kind::Custom { .. })
+            let button = matches!(n.kind, Kind::Button { .. });
+            let interactive = matches!(n.kind, Kind::Input { .. } | Kind::Slider { .. } | Kind::Custom { .. })
                 || n.tooltip.is_some()
                 || matches!(&n.kind, Kind::Text(t) if !t.layout.links.is_empty());
-            if interactive && id != 0 {
+            // What a button contains (labels, icons) is part of the button, but for another button.
+            if (button || interactive && !in_button) && id != 0 {
                 *best = Some(id);
             }
-            // What a button contains (labels, icons) is part of the button.
-            if matches!(n.kind, Kind::Button { .. }) && id != 0 {
-                return;
-            }
             for &c in &n.children {
-                walk(ui, c, p, best);
+                walk(ui, c, p, in_button || button && id != 0, best);
             }
         }
         let mut best = None;
-        walk(self, 0, p, &mut best);
+        walk(self, 0, p, false, &mut best);
         best
     }
 }

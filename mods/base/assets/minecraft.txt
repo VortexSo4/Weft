@@ -179,6 +179,14 @@ gui/slot_boots = gui/sprites/container/slot/boots
 gui/arrow_fill = gui/sprites/container/furnace/burn_progress
 gui/flame_fill = gui/sprites/container/furnace/lit_progress
 
+entity/armor/leather_1 = dyed entity/equipment/humanoid/leather entity/equipment/humanoid/leather_overlay a06540
+entity/armor/leather_2 = dyed entity/equipment/humanoid_leggings/leather entity/equipment/humanoid_leggings/leather_overlay a06540
+entity/armor/iron_1 = entity/equipment/humanoid/iron
+entity/armor/iron_2 = entity/equipment/humanoid_leggings/iron
+entity/armor/gold_1 = entity/equipment/humanoid/gold
+entity/armor/gold_2 = entity/equipment/humanoid_leggings/gold
+entity/armor/diamond_1 = entity/equipment/humanoid/diamond
+entity/armor/diamond_2 = entity/equipment/humanoid_leggings/diamond
 # Classic 64x32 layouts: the top half of the modern 64x64 skins.
 entity/zombie = entity/zombie/zombie crop 0 0 64 32
 entity/spider = entity/spider/spider

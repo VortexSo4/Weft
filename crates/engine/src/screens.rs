@@ -170,32 +170,32 @@ impl Screen for ModList {
                 let list = ui.panel("well", Style::default().pad(4.0).gap(2.0).w(184.0).h(tall).scroll().stretch(), |ui| {
                     for (i, m) in mods.iter().enumerate() {
                         let s = self.selected.clone();
-                        ui.open(Kind::Container { class: None }, Style::row().gap(2.0).stretch());
-                        let b = ui.button("button", Style::row().min_h(22.0).pad_xy(4.0, 2.0).gap(4.0).w(150.0).justify(Justify::Start), Rc::new(move |c: &mut Ctx| {
+                        let b = ui.button("button", Style::row().min_h(22.0).pad_xy(4.0, 2.0).gap(2.0).w(172.0), Rc::new(move |c: &mut Ctx| {
                             s.set(i);
                             c.requests.push(Request::Rebuild);
                         }), |ui| {
-                            match icon(&m.id) {
-                                Some(t) => drop(ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(16.0, 16.0))),
-                                None => drop(ui.add(Kind::Container { class: None }, Style::default().size(16.0, 16.0))),
-                            }
-                            ui.text(mod_name(cx.lang, &m.id), "button");
+                            ui.container(Style::row().gap(4.0).grow().center(), |ui| {
+                                match icon(&m.id) {
+                                    Some(t) => drop(ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(16.0, 16.0))),
+                                    None => drop(ui.add(Kind::Container { class: None }, Style::default().size(16.0, 16.0))),
+                                }
+                                ui.text(mod_name(cx.lang, &m.id), "button");
+                            });
+                            // Takes effect on the next start: nothing here changes what is running.
+                            let id = m.id.clone();
+                            let on = crate::modloader::wanted_on(&m.id);
+                            let led = ui.button("", Style::default().size(14.0, 18.0), Rc::new(move |c: &mut Ctx| {
+                                crate::modloader::toggle(&id);
+                                c.requests.push(Request::Rebuild);
+                            }), |ui| {
+                                ui.add(Kind::Image { texture: format!("core:gui/led_{}", if on { "on" } else { "off" }), color: 0xFFFFFFFF }, Style::default().size(6.0, 6.0));
+                            });
+                            ui.set_id(led, &format!("mod_led:{}", m.id));
                         });
                         if let Kind::Button { selected, .. } = &mut ui.nodes[b].kind {
                             *selected = i == sel;
                         }
                         ui.set_id(b, &format!("mod:{}", m.id));
-                        // Takes effect on the next start: nothing here changes what is running.
-                        let id = m.id.clone();
-                        let on = crate::modloader::wanted_on(&m.id);
-                        let led = ui.button("button", Style::default().size(20.0, 22.0).align(crate::ui::Align::Center).justify(Justify::Center), Rc::new(move |c: &mut Ctx| {
-                            crate::modloader::toggle(&id);
-                            c.requests.push(Request::Rebuild);
-                        }), |ui| {
-                            ui.add(Kind::Image { texture: format!("core:gui/led_{}", if on { "on" } else { "off" }), color: 0xFFFFFFFF }, Style::default().size(6.0, 6.0));
-                        });
-                        ui.set_id(led, &format!("mod_led:{}", m.id));
-                        ui.close();
                     }
                 });
                 ui.set_id(list, "mod_list");

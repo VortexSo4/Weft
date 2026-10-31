@@ -1350,6 +1350,34 @@ pub async fn spawn_eggs(t: T) -> R {
     Ok(())
 }
 
+/// With every other mod turned off the game still starts, whatever they brought (no mod but this
+/// one has settings of its own to lean on).
+pub async fn base_alone(t: T) -> R {
+    use std::io::Write;
+    let port = 30000 + (std::process::id() % 20000) as u16 + 1;
+    let dir = format!("{}/test-base-alone", t.c().run_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(format!("{dir}/config")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/disabled_mods.txt"), "testkit\ntestmod").map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut server = std::process::Command::new(exe)
+        .args(["--server", "--world", "w", "--seed", "1", "--view", "4", "--port", &port.to_string(), "--run-dir", &dir])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let up = t.until("the game up with only base", Duration::from_secs(30), |_| std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    if up.is_err() {
+        let _ = server.kill();
+        return up;
+    }
+    writeln!(server.stdin.take().ok_or("no console")?, "stop").map_err(|e| e.to_string())?;
+    t.until("it stops", Duration::from_secs(20), |_| server.try_wait().ok().flatten().is_some()).await?;
+    t.check(server.try_wait().ok().flatten().is_some_and(|s| s.success()), "stopped cleanly");
+    Ok(())
+}
+
 /// A game with no window, reached by address: nobody owns it by connecting first, `op` from its
 /// console makes someone more, its whitelist keeps out who isn't on it, `stop` saves and leaves.
 pub async fn dedicated_server(t: T) -> R {

@@ -79,9 +79,9 @@ struct Frame {
 }
 
 fn texture_frame(name: u32) -> Frame {
-    let base = tex_info[name * 4u];
-    let info = tex_info[name * 4u + 1u];
-    let size = f32(tex_info[name * 4u + 2u]);
+    let base = tex_info[name * 2u];
+    let info = tex_info[name * 2u + 1u];
+    let size = f32(tex_info[arrayLength(&tex_info) / 3u * 2u + name]);
     if info == 0u {
         return Frame(base, base, 0.0, size);
     }
@@ -227,9 +227,6 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
         lit = block_shade(in.slot, BlockPixel(in.uv, albedo, linear_light, in.pos, scene.params.w));
     }
     let fog = fog_amount(in.dist, scene.params.x, scene.params.y);
-    if fog <= 0.0 {
-        return lit;
-    }
     return vec4(mix(lit.rgb, scene.fog_color.rgb, fog), lit.a);
 }
 

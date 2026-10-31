@@ -236,6 +236,15 @@ pub(crate) fn qualify(ns: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn limbs_at_minus_x_are_mirrored() {
+        let model = crate::biped(false);
+        let mirror = |name: &str| model.parts.iter().find(|p| p.name == name).map(|p| p.boxes[0].mirror);
+        // Else a sleeve's long side, on the outside of the arm, is on the inside of one of them.
+        assert_eq!((mirror("rightArm"), mirror("rightLeg")), (Some(1), Some(1)));
+        assert_eq!((mirror("leftArm"), mirror("leftLeg")), (Some(0), Some(0)));
+    }
+
+    #[test]
     fn assets_stay_in_their_folder() {
         use super::asset_check as ok;
         assert!(ok("block", "base", "stone").is_ok());
