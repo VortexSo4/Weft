@@ -20,6 +20,18 @@ impl World {
         unsafe { (host().get_block)(self.raw, &pos) }
     }
 
+    /// `get` that tells air from what isn't loaded here: `None` for that. A callback sees the
+    /// region it runs in, so that is also anything far from the players around it.
+    pub fn get_loaded(&self, pos: [i32; 3]) -> Option<u32> {
+        let s = unsafe { (host().get_block_loaded)(self.raw, &pos) };
+        (s != u32::MAX).then_some(s)
+    }
+
+    /// The id of this dimension (`Dimension::id`).
+    pub fn dimension(&self) -> u32 {
+        unsafe { (host().world_dimension)(self.raw) }
+    }
+
     /// False if the position is not loaded.
     pub fn set(&self, pos: [i32; 3], state: u32) -> bool {
         unsafe { (host().set_block)(self.raw, &pos, state) != 0 }

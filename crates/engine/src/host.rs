@@ -47,6 +47,8 @@ pub static HOST: Host = Host {
     stack_get,
     stack_with,
     get_block,
+    get_block_loaded,
+    world_dimension,
     set_block,
     schedule_tick,
     world_time,
@@ -444,6 +446,14 @@ fn ip(p: *const [i32; 3]) -> IVec3 {
 
 unsafe extern "C" fn get_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u32 {
     unsafe { dim(w).get(ip(pos)).unwrap_or(content::AIR) }
+}
+
+unsafe extern "C" fn get_block_loaded(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u32 {
+    unsafe { dim(w).get(ip(pos)).unwrap_or(u32::MAX) }
+}
+
+unsafe extern "C" fn world_dimension(w: *mut abi::WorldCtx) -> u32 {
+    unsafe { dim(w).id }
 }
 
 /// A mod called a host function with something that does not exist: logged, the first 20 times

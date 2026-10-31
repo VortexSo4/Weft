@@ -75,6 +75,8 @@ pub fn all() -> Vec<TestDef> {
         gameplay::slot_limit,
         gameplay::bucket,
         gameplay::advancements,
+        gameplay::beds,
+        gameplay::beds_far,
         gameplay::spawn_eggs,
         gameplay::dedicated_server,
         ui::mods_switch,

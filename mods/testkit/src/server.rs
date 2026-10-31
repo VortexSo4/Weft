@@ -589,6 +589,10 @@ const OPS: &[(&str, &str, Run)] = &[
         let amount = cmd.float("amount").ok_or("missing amount")? as f32;
         Ok((w.damage(int(cmd, "id")?, amount, player, abi::damage::ATTACK) as u32).to_string())
     }),
+    ("hurt_me", "<amount:float>", |w, cmd, player, _| {
+        let amount = cmd.float("amount").ok_or("missing amount")? as f32;
+        Ok((w.damage(player, amount, 0, abi::damage::ATTACK) as u32).to_string())
+    }),
     ("snapshot", "<from:pos> <to:pos>", |w, cmd, _, _| {
         let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
         let mut out = Vec::new();

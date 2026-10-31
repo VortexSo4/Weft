@@ -3,6 +3,17 @@
 # emission mask of the warm bright texels.
 
 block/bedrock = block/bedrock
+block/bed_top_foot = block/red_bed_foot_up
+block/bed_top_head_0 = block/red_bed_head_up
+block/bed_top_head_90 = turned block/red_bed_head_up 90
+block/bed_top_head_180 = turned block/red_bed_head_up 180
+block/bed_top_head_270 = turned block/red_bed_head_up 270
+# Before 26.2 one picture for a model made in code; a line for what this version lacks does nothing.
+block/bed_top_foot = turned entity/bed/red 0 crop 6 28 16 16
+block/bed_top_head_0 = turned entity/bed/red 0 crop 6 6 16 16
+block/bed_top_head_90 = turned entity/bed/red 90 crop 6 6 16 16
+block/bed_top_head_180 = turned entity/bed/red 180 crop 6 6 16 16
+block/bed_top_head_270 = turned entity/bed/red 270 crop 6 6 16 16
 block/bricks = block/bricks
 block/cactus_side = block/cactus_side
 block/cactus_top = block/cactus_top

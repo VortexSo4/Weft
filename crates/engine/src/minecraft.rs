@@ -161,6 +161,8 @@ fn build(
                 Some("stack") => ("stack", words.next().unwrap_or("")),
                 // Colored by the game there, gray for nothing: see `dye`.
                 Some("dyed") => ("dyed", words.next().unwrap_or("")),
+                // Turned by a model there, one picture for every way it faces.
+                Some("turned") => ("turned", words.next().unwrap_or("")),
                 Some(s) => ("copy", s),
                 None => continue,
             };
@@ -168,8 +170,10 @@ fn build(
             let lower = (mode == "stack").then_some(next).flatten();
             let overlay = (mode == "dyed").then_some(next).flatten();
             let color = words.clone().next().and_then(|w| u32::from_str_radix(w, 16).ok()).filter(|_| mode == "dyed");
+            let turned = (mode == "turned").then_some(next).flatten().and_then(|w| w.parse::<u32>().ok());
             let crop: Vec<u32> = match next {
                 Some("crop") => words.filter_map(|w| w.parse().ok()).collect(),
+                _ if turned.is_some() && words.clone().next() == Some("crop") => words.skip(1).filter_map(|w| w.parse().ok()).collect(),
                 _ => Vec::new(),
             };
             // Names change between versions: the first one this version has.
@@ -195,20 +199,13 @@ fn build(
                 let mut px = img.rgba;
                 dye(&mut px, &above.rgba, color);
                 crate::assets::encode_png(&dst, img.width, img.height, &px).map_err(|e| e.to_string())?;
+            } else if let Some(degrees) = turned {
+                let img = crate::assets::decode_png(&png).ok_or(format!("{src}: not a png"))?;
+                let (w, h, px) = cropped(&img, &crop);
+                crate::assets::encode_png(&dst, w, h, &turn(&px, w, degrees / 90)).map_err(|e| e.to_string())?;
             } else if mode == "glow" || mode == "light" || crop.len() == 4 {
                 let img = crate::assets::decode_png(&png).ok_or(format!("{src}: not a png"))?;
-                let (x0, y0, w, h) = if crop.len() == 4 {
-                    (crop[0], crop[1], crop[2], crop[3])
-                } else {
-                    (0, 0, img.width, img.height)
-                };
-                let mut px = Vec::with_capacity((w * h * 4) as usize);
-                for y in y0..(y0 + h).min(img.height) {
-                    let row = ((y * img.width + x0) * 4) as usize;
-                    px.extend_from_slice(
-                        &img.rgba[row..row + (w.min(img.width - x0) * 4) as usize],
-                    );
-                }
+                let (w, h, mut px) = cropped(&img, &crop);
                 if mode == "glow" {
                     // White where the texel is bright and warm (fire, embers).
                     for p in px.chunks_exact_mut(4) {
@@ -288,6 +285,36 @@ fn dye(px: &mut [u8], overlay: &[u8], color: u32) {
     }
 }
 
+/// The part `crop` (x, y, w, h) of a picture, or all of it: its width, height and pixels.
+fn cropped(img: &crate::assets::Image, crop: &[u32]) -> (u32, u32, Vec<u8>) {
+    let (x0, y0, w, h) = if crop.len() == 4 {
+        (crop[0], crop[1], crop[2], crop[3])
+    } else {
+        (0, 0, img.width, img.height)
+    };
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in y0..(y0 + h).min(img.height) {
+        let row = ((y * img.width + x0) * 4) as usize;
+        px.extend_from_slice(&img.rgba[row..row + (w.min(img.width - x0) * 4) as usize]);
+    }
+    (w, h, px)
+}
+
+/// A square picture turned clockwise `quarters` times.
+fn turn(px: &[u8], size: u32, quarters: u32) -> Vec<u8> {
+    let mut out = px.to_vec();
+    for _ in 0..quarters % 4 {
+        let from = out.clone();
+        for y in 0..size {
+            for x in 0..size {
+                let (a, b) = (((y * size + x) * 4) as usize, (((size - 1 - x) * size + y) * 4) as usize);
+                out[a..a + 4].copy_from_slice(&from[b..b + 4]);
+            }
+        }
+    }
+    out
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
         let dst = to.join(e.file_name());
@@ -309,7 +336,7 @@ fn fnv(s: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{dye, light_to_alpha};
+    use super::{dye, light_to_alpha, turn};
 
     /// Builds the real pack from the Minecraft on this computer into `run`, as a normal start does:
     /// automated runs don't, and this needs no window. `cargo test --release -p weft_engine real_pack -- --ignored`
@@ -333,6 +360,15 @@ mod tests {
         assert_eq!(px[4..8], [255, 230, 100, 255], "the brightest stay as they are");
         assert_eq!(px[8..12], [255, 255, 127, 40], "a dim halo is its color, barely covering");
         assert_eq!(px[12..16], [255, 255, 127, 20], "alpha it already had counts");
+    }
+
+    #[test]
+    fn turned_clockwise() {
+        let (a, b, c, d) = ([1, 0, 0, 255], [2, 0, 0, 255], [3, 0, 0, 255], [4, 0, 0, 255]);
+        let px = [a, b, c, d].concat();
+        assert_eq!(turn(&px, 2, 1), [c, a, d, b].concat());
+        assert_eq!(turn(&px, 2, 2), [d, c, b, a].concat());
+        assert_eq!(turn(&px, 2, 4), px);
     }
 
     #[test]

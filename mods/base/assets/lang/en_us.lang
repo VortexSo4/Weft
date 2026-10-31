@@ -74,6 +74,8 @@ block.base.crafting_table = Crafting Table
 block.base.furnace = Furnace
 block.base.furnace.tooltip = Smelts ores and cooks food.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {color:key}fuel{/} in the bottom slot.{/on_key}
+block.base.bed = Bed
+block.base.bed.tooltip = Sleep through the night and wake up here after dying.
 block.base.chest = Chest
 block.base.torch = Torch
 block.base.ladder = Ladder
@@ -185,6 +187,14 @@ mod.base.authors = vortex_so
 menu.news = {align:center}{img:base:icon_settings 16x16}{/align}
     {align:center}Weft is in development.{/align}
 command.base.feed = food set to {0}
+bed.base.sleeping = Sleeping…
+bed.base.leave = Leave Bed
+bed.base.spawn_set = Respawn point set
+bed.base.not_night = You can only sleep at night
+bed.base.monsters = You may not rest now, there are monsters nearby
+bed.base.occupied = This bed is occupied
+bed.base.obstructed = This bed is obstructed
+bed.base.missing = Your bed was missing, so you are back at the spawn
 hud.element.base.health = Health
 hud.element.base.armor = Armor
 hud.element.base.food = Food

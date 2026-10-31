@@ -856,6 +856,7 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
         (abi::event::BLOCK_PLACED, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
         (abi::event::ENTITY_DIED, abi::Death::SCHEMA, size_of::<abi::Death>() as u32),
         (abi::event::PLAYER_JOINED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
+        (abi::event::PLAYER_RESPAWNED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
         (abi::event::ITEM_PICKED_UP, abi::Pickup::SCHEMA, size_of::<abi::Pickup>() as u32),
         (abi::event::ENTITY_HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
         (abi::event::ITEM_USED, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),

@@ -129,6 +129,9 @@ pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOC
 pub static BLOCK_PLACED: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_PLACED);
 pub static ENTITY_DIED: Event<abi::Death> = Event::named(abi::event::ENTITY_DIED);
 pub static PLAYER_JOINED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_JOINED);
+/// A dead player came back at the spawn point, components reset but the `KEEP` ones; moving
+/// them on from here (a bed) happens before anyone saw them there.
+pub static PLAYER_RESPAWNED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_RESPAWNED);
 pub static ITEM_PICKED_UP: Event<abi::Pickup> = Event::named(abi::event::ITEM_PICKED_UP);
 pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT);
 /// A player used the held item and something happened (`stack` as it was before): eating,
