@@ -1985,9 +1985,16 @@ impl Dim {
     /// Vanilla's 4x4x4 pieces of a broken block flying apart, for everyone watching.
     pub fn block_dust(&mut self, c: &Content, p: IVec3, state: u32) {
         let Some(&kind) = c.game.particle_names.get(abi::particle::BLOCK) else { return };
-        let pos = (p.as_dvec3() + DVec3::splat(0.5)).to_array();
-        let burst = abi::ParticleBurst { kind, pos, spread: [0.5; 3], velocity: [0.0, 2.0, 0.0], speed: 3.0, count: 64, block: state, ..abi::ParticleBurst::DEFAULT };
-        self.events.push(DimEvent::Particles { dim: self.id, burst });
+        // Vanilla's: a grid over each box of its shape, a piece every quarter block or at least two
+        // along a side, far enough from the box's faces not to start inside a neighbor.
+        for b in &c.states[state as usize].selection {
+            let size = [b[3] - b[0], b[4] - b[1], b[5] - b[2]];
+            let cells = size.map(|s| ((s / 0.25).ceil() as u32).max(2));
+            let pos = [0, 1, 2].map(|i| p[i] as f64 + (b[i] + size[i] / 2.0) as f64);
+            let spread = [0, 1, 2].map(|i| size[i] * (0.5 - 0.5 / cells[i] as f32));
+            let burst = abi::ParticleBurst { kind, pos, spread, velocity: [0.0, 2.0, 0.0], speed: 3.6, outward: 1, count: cells[0] * cells[1] * cells[2], block: state, ..abi::ParticleBurst::DEFAULT };
+            self.events.push(DimEvent::Particles { dim: self.id, burst });
+        }
     }
 
     /// Spawns what a block's loot table gives for `tool`; `mined`: by that tool, not by the world

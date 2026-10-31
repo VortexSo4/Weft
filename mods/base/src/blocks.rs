@@ -243,6 +243,8 @@ pub fn register(r: &mut Registry) {
     r.tag("dyes/green", &["cactus"]);
     r.tag("torches", &["torch"]);
     r.tag("furnaces", &["furnace"]);
+    r.tag("crafting_tables", &["crafting_table"]);
+    r.tag("cobblestone", &["cobblestone"]);
     r.tag("plant_soil", &["farmland"]);
     r.tag("sugar_cane_soil", &["#dirt"]);
     r.tag("sugar_cane_soil", &["#sand"]);

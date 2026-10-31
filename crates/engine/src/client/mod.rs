@@ -100,6 +100,8 @@ pub struct ClientEntity {
     pub worn: Vec<u32>,
     /// Accumulated walk distance and current swing amplitude, for limb animation.
     pub walk: f32,
+    /// Blocks actually walked, which limbs at full swing fall behind of.
+    pub walked: f32,
     pub swing: f32,
     pub age: f32,
     pub burning: bool,
@@ -155,7 +157,7 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
 impl ClientEntity {
     /// What its kind's client tick gets (`client` filled in by the caller).
     pub fn args(&self, id: u64, dt: f32) -> weft_abi::ClientEntityArgs {
-        weft_abi::ClientEntityArgs { client: std::ptr::null_mut(), entity: id, kind: self.kind, pos: self.pos.to_array(), yaw: self.yaw, walked: self.walk, dying: self.dying.unwrap_or(-1.0), age: self.age, dt }
+        weft_abi::ClientEntityArgs { client: std::ptr::null_mut(), entity: id, kind: self.kind, pos: self.pos.to_array(), yaw: self.yaw, walked: self.walked, dying: self.dying.unwrap_or(-1.0), age: self.age, dt }
     }
 
     /// Half width, height and eye height of its box, like the server's `Entity::dims`.
@@ -327,6 +329,8 @@ pub struct Client {
     walk_dist: f32,
     bob: f32,
     last_smooth: DVec3,
+    /// How long the move since `last_smooth` took.
+    moved_over: f32,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
     pub held_name: (ItemStack, Instant),
     /// Names of the players online, for completion.
@@ -587,6 +591,7 @@ impl Client {
             walk_dist: 0.0,
             bob: 0.0,
             last_smooth: DVec3::ZERO,
+            moved_over: 0.0,
             dead: false,
             permission: 0,
             weather: (false, false),
@@ -624,6 +629,11 @@ impl Client {
 
     fn attribute(&self, id: u32) -> f32 {
         self.attributes.get(id as usize).copied().unwrap_or(1.0)
+    }
+
+    /// How much walking shakes the view now.
+    pub fn bob(&self) -> f32 {
+        self.bob
     }
 
     /// How charged the next swing is, 0..1, as the server will judge it.
@@ -771,12 +781,13 @@ impl Client {
         let walked_by = now - self.last_smooth;
         self.last_smooth = now;
         self.self_body = turn_body(self.self_body, self.player.yaw, walked_by, dt as f32);
-        let speed = moved / (dt as f32).max(1e-4);
-        self.self_walk += moved;
-        let k_swing = (dt * 10.0).min(1.0) as f32;
+        // That move is the last frame's: physics runs after this. By this frame's time, uneven frames
+        // made the speed jump up and down and the bob settle far too low.
+        let speed = moved / std::mem::replace(&mut self.moved_over, dt as f32).max(1e-4);
         // Limbs swing with horizontal speed in the air too, like vanilla.
-        self.self_swing += ((speed / 5.0).min(1.0) - self.self_swing) * k_swing;
-        let walking = self.player.on_ground && !self.player.flying;
+        crate::model::walk_limbs(&mut self.self_walk, &mut self.self_swing, speed, dt as f32);
+        // Vanilla's: swimming doesn't bob, even touching the bottom.
+        let walking = self.player.on_ground && !self.player.flying && self.player.pose != Pose::Swim && !self.dead;
         // Vanilla: amplitude follows the per-tick speed capped at 0.1, eased by 0.4 per tick.
         self.walk_dist += moved * 0.6;
         let target = if walking { (speed / 20.0).min(0.1) } else { 0.0 };
@@ -1121,8 +1132,8 @@ impl Client {
             e.arm_swing = e.arm_swing.map(|p| p + dt as f32 / 0.3).filter(|&p| p < 1.0);
             e.flash = (e.flash - dt as f32).max(0.0);
             let speed = (walked.unwrap_or(e.pos - before).with_y(0.0).length() / dt.max(1e-4)) as f32;
-            e.walk += speed * dt as f32;
-            e.swing += ((speed / 5.0).min(1.0) - e.swing) * (k as f32);
+            e.walked += speed * dt as f32;
+            crate::model::walk_limbs(&mut e.walk, &mut e.swing, speed, dt as f32);
             e.hurt = (e.hurt - dt as f32).max(0.0);
             e.age += dt as f32;
             if let Some(d) = &mut e.dying {
@@ -1145,8 +1156,8 @@ impl Client {
                     let normal = crate::world::DIRS[hit.face as usize].as_vec3();
                     let at = pos.as_dvec3() + self.frame_origin(frame) + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
                     let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
-                    let velocity = (normal * 0.6).to_array();
-                    self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..weft_abi::ParticleBurst::DEFAULT }, &self.world);
+                    let velocity = [0.0, 2.0, 0.0];
+                    self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.72, count: 1, block: hit.state, ..weft_abi::ParticleBurst::DEFAULT }, &self.world);
                 }
             }
         }
@@ -1572,7 +1583,7 @@ impl Client {
         let block = |p: IVec3| world.block_or_air(p);
         let dist = physics::raycast(c, &block, eye.pos, back, 4.0, false).map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
         cam.pos = eye.pos + back * dist;
-        cam
+        self.bobbed(cam)
     }
 
     /// The local player as an entity, for third person.
@@ -1594,6 +1605,7 @@ impl Client {
             hurt: self.hurt_flash,
             worn,
             walk: self.self_walk,
+            walked: self.self_walk,
             swing: self.self_swing,
             age: self.start.elapsed().as_secs_f32(),
             burning: self.burning,

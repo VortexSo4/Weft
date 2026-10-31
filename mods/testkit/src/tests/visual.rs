@@ -268,8 +268,11 @@ pub async fn break_overlay(t: T) -> R {
     t.frames(3).await?;
     let (w, h) = (t.state().window[0], t.state().window[1]);
     let before = t.grab().await?;
-    t.hold("core:attack", 0.3);
-    t.secs(0.25).await?;
+    // Mining slowly, so a late picture still finds the button down and the block there.
+    t.op("attr_mod me core:mining_speed slow 0 -0.75 0").await?;
+    t.secs(0.2).await?;
+    t.hold("core:attack", 2.0);
+    t.secs(1.0).await?;
     let cracked = t.shot("ladder").await?.px;
     let face = t.block_on_screen(ladder, [0.0, 0.0, -0.45]).unwrap_or((0.5, 0.5));
     let v = changed(&before, &cracked, w, h, face.0 - 0.04, face.1 - 0.06, face.0 + 0.04, face.1 + 0.06);
@@ -277,7 +280,8 @@ pub async fn break_overlay(t: T) -> R {
     let above = t.block_on_screen(add(wall, [0, 1, 0]), [0.0, 0.0, 0.5]).unwrap_or((0.5, 0.2));
     let v = changed(&before, &cracked, w, h, above.0 - 0.04, above.1 - 0.04, above.0 + 0.04, above.1 + 0.04);
     t.probe("none on the wall above it", v, v < 0.02);
-    t.secs(0.3).await?;
+    t.secs(1.2).await?;
+    t.op("attr_rm me core:mining_speed slow").await?;
     t.op("mode creative").await?;
     t.set(ladder, "air").await?;
     let next = add(wall, [0, 0, -1]);

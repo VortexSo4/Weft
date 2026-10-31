@@ -259,6 +259,7 @@ impl Client {
                     hurt: 0.0,
                     worn: Vec::new(),
                     walk: 0.0,
+                    walked: 0.0,
                     swing: 0.0,
                     age: 0.0,
                     burning: false,

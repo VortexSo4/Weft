@@ -4,6 +4,7 @@
 //! `--test bench` the benchmarks), each in a fresh throwaway world, then writes
 //! `run/test-reports/report.txt` and exits with the number of failed tests. Screenshots of the
 //! run go to `run/test-shots/` for looking at; checks never compare pictures with references.
+//! `--test all` runs several at once, `--jobs 1` one by one, `--jobs N` for a number; see the game's `main`.
 //! `--test-keep` keeps the test worlds. `weft --world w --script file.txt` runs a line script (see `script.rs`).
 //! Without those options the mod only registers its message channels.
 
@@ -69,6 +70,9 @@ fn init(r: &mut Registry) {
     });
 }
 
+/// Tests of how quick the game is, which other processes on the machine would fail.
+const ALONE: &[&str] = &["edit_while_loading"];
+
 /// Builds the queue on the main thread, where the runner lives.
 fn start(c: &Client) {
     let Some((test, script)) = PLAN.get() else { return };
@@ -126,5 +130,21 @@ fn start(c: &Client) {
         }
         all.into_iter().filter(|t| names.contains(&t.name.as_str())).collect()
     };
+    // One of several processes running them all (see the game's `--jobs`): every Nth.
+    let shard = launch_option("test-shard");
+    let warm = shard.is_some();
+    let mut queue: Vec<runner::TestDef> = match shard {
+        Some(s) if s == "alone" => queue.into_iter().filter(|t| ALONE.contains(&t.name.as_str())).collect(),
+        Some(s) => {
+            let part = |w: Option<&str>| w.and_then(|w| w.parse::<usize>().ok()).unwrap_or(1);
+            let mut w = s.split('/');
+            let (i, n) = (part(w.next()), part(w.next()));
+            queue.into_iter().filter(|t| !ALONE.contains(&t.name.as_str())).enumerate().filter(|(k, _)| k % n == i).map(|(_, t)| t).collect()
+        }
+        None => queue,
+    };
+    if warm {
+        queue.splice(0..0, crate::tests![tests::warm_up]);
+    }
     runner::start(queue);
 }

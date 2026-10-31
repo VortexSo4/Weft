@@ -673,6 +673,7 @@ pub fn frame(c: &Client) {
 }
 
 fn finish(c: &Client, run: &mut Runner) {
+    run.done.retain(|o| o.name != "warm_up" || !o.ok);
     let failed = run.done.iter().filter(|o| !o.ok).count();
     let mut report = format!(
         "testkit report: {} passed, {failed} failed, {:.1} s\n",

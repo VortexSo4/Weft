@@ -142,7 +142,7 @@ impl ClientWorld {
             time: 0,
             ready: FxHashSet::default(),
             order: Vec::new(),
-            order_center: IVec3::MAX,
+            order_center: IVec3::ZERO,
             order_size: 0,
             in_flight: FxHashSet::default(),
             tx,

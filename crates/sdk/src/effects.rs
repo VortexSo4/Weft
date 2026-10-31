@@ -343,6 +343,11 @@ impl Burst {
         self.burst.speed = s;
         self
     }
+    /// Each flies away from the middle of the burst, more or less, like the pieces of a broken block.
+    pub fn outward(mut self) -> Self {
+        self.burst.outward = 1;
+        self
+    }
     /// Block state the textureless kinds (block dust) take their texture from.
     pub fn block(mut self, state: u32) -> Self {
         self.burst.block = state;

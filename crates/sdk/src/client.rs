@@ -314,7 +314,7 @@ impl Client {
     }
 
     /// The translation `key` with `args`, centered at fractions of the window, `size` times as
-    /// big as menu text.
+    /// big as menu text. Part of the GUI: F1 hides it with the rest.
     #[allow(clippy::too_many_arguments)]
     pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
         self.draw(None, gk::SCREEN_LABEL, [x as f64, y as f64, 0.0], [size as f64, 0.0, 0.0], color, key, args);

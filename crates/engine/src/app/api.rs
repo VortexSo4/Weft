@@ -212,6 +212,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.gui_scale = r.gui_scale();
             s.screen = r.screens.last().map_or(Str::EMPTY, |(sc, _)| Str::new(sc.name()));
             s.screen_frames = r.screen_frames;
+            s.bob = r.game.as_ref().map_or(0.0, |g| g.client.bob());
             (s.benches, [s.bench_fps, s.bench_avg_ms, s.bench_p99_ms, s.bench_gpu_ms, s.bench_server_ms]) = (r.benches, r.bench_last);
             if let Some(srv) = r.game.as_ref().and_then(|g| g.server.as_ref()) {
                 s.server_ms = srv.tick_ms();

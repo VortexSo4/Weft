@@ -523,3 +523,30 @@ mod tests {
         assert_eq!(b.at(3.0, false), 1.0);
     }
 }
+
+/// Vanilla's `WalkAnimationState`, per second: the swing follows the speed, full at 5 blocks a
+/// second and no more, and the limbs move by the swing. However fast it flies, they keep their pace.
+pub fn walk_limbs(limb: &mut f32, swing: &mut f32, speed: f32, dt: f32) {
+    *swing += ((speed / 5.0).min(1.0) - *swing) * (1.0 - 0.6f32.powf(dt * crate::world::TPS as f32));
+    *limb += *swing * 5.0 * dt;
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::walk_limbs;
+
+    fn after(speed: f32) -> f32 {
+        let (mut limb, mut swing) = (0.0, 0.0);
+        for _ in 0..600 {
+            walk_limbs(&mut limb, &mut swing, speed, 1.0 / 60.0);
+        }
+        limb / 10.0
+    }
+
+    #[test]
+    fn limbs_have_a_top_speed() {
+        assert!((after(2.5) - 2.5).abs() < 0.2, "at a walk they follow the feet: {}", after(2.5));
+        assert!((after(40.0) - 5.0).abs() < 0.2, "flying fast they don't: {}", after(40.0));
+        assert_eq!(after(40.0), after(500.0));
+    }
+}

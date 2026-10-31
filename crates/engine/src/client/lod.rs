@@ -28,6 +28,8 @@ pub const MAX_LEVEL: u32 = 5;
 /// A tile splits into the level below while nearer than this many of its widths: a cell stays
 /// about the same size on screen (a 32-block cell at 4096 blocks).
 const SPLIT: f64 = 4.0;
+/// Blocks under the land from where distant terrain is left out.
+const UNDERGROUND: i32 = 32;
 /// Tiles asked for and not back yet, at most.
 const IN_FLIGHT: usize = 256;
 
@@ -161,6 +163,8 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
 
 /// The client's distant terrain: which tiles to show, asking for missing ones, taking made ones.
 pub struct Lod {
+    /// The land's height at the camera's column, kept while it stays in it.
+    ground: Option<((u32, IVec2), i32)>,
     jobs: Sender<LodJob>,
     done: (Sender<LodMesh>, Receiver<LodMesh>),
     dim: u32,
@@ -188,6 +192,7 @@ const MASK_MARGIN: i32 = 3;
 impl Lod {
     pub fn new(jobs: Sender<LodJob>) -> Lod {
         Lod {
+            ground: None,
             jobs,
             done: unbounded(),
             dim: u32::MAX,
@@ -279,13 +284,28 @@ impl Lod {
             }
         }
         render.lod_draw.clear();
-        render.lod_draw.extend(shown);
+        // It is a shell over the land with nothing under it: from deep below, its walls would hang
+        // in the sky. Only rock is that way anyway.
+        if !self.deep_underground(c, cam) {
+            render.lod_draw.extend(shown);
+        }
         let gone: Vec<TileKey> = self.ready.iter().copied().filter(|k| !keep.contains(k)).collect();
         for key in gone {
             self.ready.remove(&key);
             render.remove_lod(key);
         }
         self.request();
+    }
+
+    /// Well under the land at the camera's column, so its sky can't be seen. Near the surface a cave
+    /// mouth or a ravine still looks out over the distance.
+    fn deep_underground(&mut self, c: &Content, cam: DVec3) -> bool {
+        let at = IVec2::new(cam.x.floor() as i32, cam.z.floor() as i32);
+        if self.ground.is_none_or(|g| g.0 != (self.dim, at)) {
+            let height = c.dims[self.dim as usize].column(self.seed, at.x, at.y).map_or(i32::MIN, |col| col.height);
+            self.ground = Some(((self.dim, at), height));
+        }
+        self.ground.is_some_and(|g| g.1 != i32::MIN && cam.y < (g.1 - UNDERGROUND) as f64)
     }
 
     /// Keeps the mask of columns shown by cubes current: columns that changed, and the ones

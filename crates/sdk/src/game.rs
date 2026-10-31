@@ -106,7 +106,7 @@ impl World {
     pub fn look_at(&self, id: u64, max: f64, liquids: bool) -> Option<LookAt> {
         let (mut pos, mut face, mut frame) = ([0; 3], 0, 0);
         let s = unsafe { (host().entity_look_at)(self.raw(), id, max, liquids as u32, &mut pos, &mut face, &mut frame) };
-        (s != 0).then_some(LookAt { pos, face, state: s - 1, frame })
+        (s != 0).then(|| LookAt { pos, face, state: s - 1, frame })
     }
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }

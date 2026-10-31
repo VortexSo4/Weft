@@ -127,7 +127,7 @@ pub fn register(r: &mut Registry) {
         ui.icons_rtl("food", 10, |c| if c.creative() { -1.0 } else { c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()) })
     });
     r.hud_element(&HUD_AIR, hud_anchor::HOTBAR_RIGHT, 1, |ui| {
-        ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
+        ui.icons_rtl("air", 10, |c| if c.creative() { -1.0 } else { c.component(&HUNGER).map_or(-1.0, |h| air_bubbles(h.air)) })
     });
 
     // While a swing charges.
@@ -247,10 +247,21 @@ fn heal_or_starve(w: &World, id: u64, st: &mut EntityState) {
     }
 }
 
+/// What the air bar shows: whole bubbles like vanilla's, hidden with a full breath.
+fn air_bubbles(air: f32) -> f32 {
+    if air < MAX_AIR { (air.max(0.0) / MAX_AIR * 10.0).ceil() * 2.0 } else { -1.0 }
+}
+
 fn tick_players(w: &World) {
     for id in w.players() {
         let Some(mut st) = w.entity(id) else { continue };
         if w.creative(id) {
+            // Nothing takes the breath here, and what was used comes back.
+            if w.component(id, &HUNGER).is_some_and(|h| h.air < MAX_AIR) {
+                if let Some(h) = w.component_mut(id, &HUNGER) {
+                    h.air = (h.air + 4.0).min(MAX_AIR);
+                }
+            }
             continue;
         }
         heal_or_starve(w, id, &mut st);
@@ -287,5 +298,19 @@ fn tick_players(w: &World) {
         } else if h.air < MAX_AIR {
             h.air = (h.air + 4.0).min(MAX_AIR);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn air_shows_whole_bubbles() {
+        assert_eq!(air_bubbles(MAX_AIR), -1.0, "hidden with a full breath");
+        assert_eq!(air_bubbles(299.0), 20.0);
+        assert_eq!(air_bubbles(270.0), 18.0);
+        assert_eq!(air_bubbles(1.0), 2.0);
+        assert_eq!(air_bubbles(-5.0), 0.0);
     }
 }
