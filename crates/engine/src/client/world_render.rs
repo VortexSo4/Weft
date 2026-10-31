@@ -284,6 +284,11 @@ pub struct WorldRenderer {
     trans: Vec<DrawRecord>,
     /// Draws of each region seen, kept between frames.
     parts: Vec<Vec<DrawRecord>>,
+    /// Per-region draw counts and write cursors, kept between frames like `parts`.
+    counts: Vec<Vec<u32>>,
+    starts: Vec<Vec<u32>>,
+    /// Camera-relative positions of the structures drawn, kept between frames.
+    frame_offsets: Vec<Vec3>,
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
     /// they use (globals, origins, indirect, offsets, the frame's scene).
     translucent: usize,
@@ -388,6 +393,9 @@ impl WorldRenderer {
             meshes: FxHashMap::default(),
             regions: FxHashMap::default(),
             parts: Vec::new(),
+            counts: Vec::new(),
+            starts: Vec::new(),
+            frame_offsets: Vec::new(),
             offsets: Vec::new(),
             globals,
             origins: Vec::new(),
@@ -697,7 +705,9 @@ impl WorldRenderer {
 
         let planes = frustum_planes(view_proj);
         // Camera-relative offset of each structure drawn (k + 1 its index; 0 the world).
-        let frame_offsets: Vec<Vec3> = frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()).collect();
+        let mut frame_offsets = std::mem::take(&mut self.frame_offsets);
+        frame_offsets.clear();
+        frame_offsets.extend(frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()));
         // Regions in view, nearest first: what is drawn first then hides what is behind it.
         let side = (16 << REGION) as f32;
         let mut seen: Vec<(f32, &Vec<(MeshKey, GpuMesh)>)> = self
@@ -747,16 +757,15 @@ impl WorldRenderer {
         // Opaque and cutout runs; translucent ones are sorted far to near over all of them.
         let nb = 4 * pages;
         let bucket = |d: &DrawRecord| (d.1 as usize * 2 + d.0 as usize) * pages + d.2 as usize;
-        let counts: Vec<Vec<u32>> = seen_parts
-            .par_iter()
-            .map(|p| {
-                let mut c = vec![0u32; nb];
-                for d in p.iter().filter(|d| d.1 < 2) {
-                    c[bucket(d)] += 1;
-                }
-                c
-            })
-            .collect();
+        let mut counts = std::mem::take(&mut self.counts);
+        counts.resize_with(seen_parts.len(), Vec::new);
+        seen_parts.par_iter().zip(counts.par_iter_mut()).for_each(|(p, c)| {
+            c.clear();
+            c.resize(nb, 0);
+            for d in p.iter().filter(|d| d.1 < 2) {
+                c[bucket(d)] += 1;
+            }
+        });
         let mut totals = vec![0u32; nb];
         for c in &counts {
             for (t, v) in totals.iter_mut().zip(c) {
@@ -769,9 +778,11 @@ impl WorldRenderer {
             next.push(opaque);
             opaque += t;
         }
-        let mut starts: Vec<Vec<u32>> = Vec::with_capacity(counts.len());
-        for c in &counts {
-            starts.push(next.clone());
+        let mut starts = std::mem::take(&mut self.starts);
+        starts.resize_with(counts.len(), Vec::new);
+        for (s, c) in starts.iter_mut().zip(&counts) {
+            s.clear();
+            s.extend_from_slice(&next);
             for (n, v) in next.iter_mut().zip(c) {
                 *n += v;
             }
@@ -810,7 +821,12 @@ impl WorldRenderer {
         let mut runs = std::mem::take(&mut self.runs);
         runs.clear();
         if n == 0 {
-            (self.parts, self.trans, self.runs) = (parts, trans, runs);
+            self.parts = parts;
+            self.trans = trans;
+            self.runs = runs;
+            self.counts = counts;
+            self.starts = starts;
+            self.frame_offsets = frame_offsets;
             self.buffers = None;
             return;
         }
@@ -866,7 +882,12 @@ impl WorldRenderer {
                 _ => runs.push((d.0, d.1, d.2, opaque + lods + j as u32, 1)),
             }
         }
-        (self.parts, self.trans, self.runs) = (parts, trans, runs);
+        self.parts = parts;
+        self.trans = trans;
+        self.runs = runs;
+        self.counts = counts;
+        self.starts = starts;
+        self.frame_offsets = frame_offsets;
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
         self.emit(list, 0..self.translucent);
     }

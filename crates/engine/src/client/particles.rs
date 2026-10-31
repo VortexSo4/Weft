@@ -286,6 +286,13 @@ impl Particles {
                 });
             }
         }
+        // Blended particles are drawn after the translucent blocks, so they go far to near;
+        // their positions are already relative to the camera.
+        let far = |p: &GpuParticle| {
+            let [x, y, z, _] = p.pos_size;
+            x * x + y * y + z * z
+        };
+        self.gpu[blended_from..].sort_unstable_by(|a, b| far(b).total_cmp(&far(a)));
         let n = self.gpu.len() as u32;
         let stride = size_of::<GpuParticle>() as u64;
         let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.instances, frame.slot, n, stride, usage::STORAGE, "particles");

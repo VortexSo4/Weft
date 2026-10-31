@@ -842,6 +842,37 @@ pub async fn food(t: T) -> R {
     Ok(())
 }
 
+/// A hoe turns dirt into farmland and wears; shears take the leaves themselves.
+pub async fn hoe_and_shears(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let dirt = add(f, [2, 0, 0]);
+    t.set(dirt, "dirt").await?;
+    t.op("put me 0 wood_hoe 1").await?;
+    t.c().select(0);
+    t.look_at(dirt);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    t.check_eq(t.block(dirt).await?, "base:farmland".into(), "the hoe tilled the dirt");
+    t.check_eq(t.slot("me", 0).await?.2, 1, "the hoe wore");
+    // Shears drop the leaves themselves, not the sapling chance a hand gets.
+    let leaves = add(f, [-2, 0, 0]);
+    t.set(leaves, "oak_leaves").await?;
+    t.op("put me 1 shears 1").await?;
+    t.c().select(1);
+    t.look_at(leaves);
+    t.frames(2).await?;
+    t.hold("core:attack", 0.4);
+    t.secs(0.8).await?;
+    t.check_eq(t.block(leaves).await?, "core:air".into(), "the shears cut the leaves");
+    t.c().teleport([leaves[0] as f64 + 0.5, leaves[1] as f64, leaves[2] as f64 + 0.5]);
+    let leaf = item("base:oak_leaves");
+    let got = t.until("leaves picked up", Duration::from_secs(5), |t| (0..36).any(|i| t.c().inventory_slot(i).item == leaf)).await;
+    t.check(got.is_ok(), "shears dropped no leaves");
+    Ok(())
+}
+
 /// A battery has no tick: only the grid changes its energy, and its open menu still sees it.
 pub async fn battery(t: T) -> R {
     t.flat().await?;

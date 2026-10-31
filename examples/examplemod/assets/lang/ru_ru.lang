@@ -1,0 +1,7 @@
+language.name = Русский
+item.examplemod.example_item = Пример предмета
+item.examplemod.example_item.tooltip = Выдаётся каждому, кто заходит; замените на что-нибудь полезное
+config.examplemod.gift_on_join = Подарок при входе
+config.examplemod.gift_on_join.tooltip = Игроки, заходящие в мир, получают пример предмета
+mod.examplemod.name = Пример мода
+examplemod.hello = привет {0} раз

@@ -24,6 +24,12 @@ your mod can too.\
 When in doubt, check `mods/base` and `mods/testmod` and copy from there.\
 testmod exists to prove you don't have to touch the engine.
 
+Mods are native libraries loaded into the game's process. There is no sandbox: a mod can read your
+files, open network connections and crash the game, so only install mods you trust, the same as any
+other executable. What the engine does guarantee is that mistakes stay the mod's own: a panic in a
+callback disables that callback and names the mod in the log, and a native fault writes a crash
+report naming the mod that was running.
+
 ## Creating a mod in two minutes
 
 Fastest way to begin is to copy `examples/examplemod`.\
@@ -423,3 +429,4 @@ You can contact me on Discord: `@vortex_so`
 - [Machines](machines.md): blocks with inventories, recipes, energy
 - [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs
 - [Resource packs](resourcepacks.md): what a pack can replace and how it is laid out
+- [Testing](testing.md): the unit tests, the in-game suite behind `--test`, scripts and the language checker

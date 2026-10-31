@@ -88,7 +88,7 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone:
         .tab(&crate::tabs::NATURAL);
 }
 
-fn leaves(r: &mut Registry, handle: &'static Block, tex: &str) {
+fn leaves(r: &mut Registry, handle: &'static Block, tex: &str, item: &str) {
     r.block(handle)
         .sound_group("grass")
         .texture(tex)
@@ -99,10 +99,14 @@ fn leaves(r: &mut Registry, handle: &'static Block, tex: &str) {
         .tag("leaves")
         .mineable("shears")
         .tab(&crate::tabs::NATURAL);
-    // Vanilla: a sapling one time in 20, oak leaves an apple one time in 200.
-    let table = r.loot(handle).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
+    // Vanilla: shears take the leaves themselves; by hand a sapling one time in 20, and oak
+    // leaves an apple one time in 200.
+    let table = r
+        .loot(handle)
+        .pool(Pool::new().when(Cond::tool_tag("#tools/shears")).item(item))
+        .pool(Pool::new().when(Cond::Chance(0.05)).when(Cond::not_tool_tag("#tools/shears")).item("sapling"));
     if std::ptr::eq(handle, &OAK_LEAVES) {
-        table.pool(Pool::new().when(Cond::Chance(0.005)).item("apple"));
+        table.pool(Pool::new().when(Cond::Chance(0.005)).when(Cond::not_tool_tag("#tools/shears")).item("apple"));
     }
 }
 
@@ -147,9 +151,9 @@ pub fn register(r: &mut Registry) {
     for (h, wood) in [(&OAK_PLANKS, "oak"), (&BIRCH_PLANKS, "birch"), (&SPRUCE_PLANKS, "spruce")] {
         r.block(h).sound_group("wood").texture(&format!("planks_{wood}")).hardness(2.0).mineable("axe").tag("planks").tag(&format!("planks/{wood}")).tag("materials/wood").set(&FLAMMABLE, 5).set(&FUEL, 300).tab(&crate::tabs::BUILDING);
     }
-    leaves(r, &OAK_LEAVES, "leaves_oak");
-    leaves(r, &BIRCH_LEAVES, "leaves_birch");
-    leaves(r, &SPRUCE_LEAVES, "leaves_spruce");
+    leaves(r, &OAK_LEAVES, "leaves_oak", "oak_leaves");
+    leaves(r, &BIRCH_LEAVES, "leaves_birch", "birch_leaves");
+    leaves(r, &SPRUCE_LEAVES, "leaves_spruce", "spruce_leaves");
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
     r.liquid(&WATER).tint(&tints::WATER).translucent().renewable(2).fog(0x050533, 96.0).tag("water").bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
@@ -234,7 +238,11 @@ pub fn register(r: &mut Registry) {
     r.block(&GOLD_BLOCK).sound_group("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).tag("ore_blocks/gold").tab(&crate::tabs::BUILDING);
     r.block(&DIAMOND_BLOCK).sound_group("stone").hardness(5.0).mineable("pickaxe").needs_tool(tool_tier::IRON).tag("ore_blocks/diamond").tab(&crate::tabs::BUILDING);
     r.block(&COAL_BLOCK).sound_group("stone").hardness(5.0).mineable("pickaxe").needs_tool(0).tag("ore_blocks/coal").set(&FUEL, 16000).tab(&crate::tabs::BUILDING);
-    r.block(&WOOL).sound_group("cloth").texture("wool_white").hardness(0.8).set(&FLAMMABLE, 30).tab(&crate::tabs::COLORED);
+    r.block(&WOOL).sound_group("cloth").texture("wool_white").hardness(0.8).tag("wool").set(&FLAMMABLE, 30).tab(&crate::tabs::COLORED);
+    // Dyeable wool; only red has a dye yet (`#dyes/red`), the others wait for one.
+    for (name, tex) in [("black_wool", "wool_black"), ("brown_wool", "wool_brown"), ("red_wool", "wool_red")] {
+        r.block(Block::generated(name.into())).sound_group("cloth").texture(tex).hardness(0.8).tag("wool").set(&FLAMMABLE, 30).tab(&crate::tabs::COLORED);
+    }
 
     // What may grow or stand where, from the common `dirt` and `sand` tags like modern vanilla:
     // a mod's sand tagged `sand` gets cactus and sugar cane, in the world and from players.

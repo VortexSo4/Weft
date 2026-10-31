@@ -149,6 +149,9 @@ pub struct VulkanBackend {
     queries: vk::QueryPool,
     ts_period: f32,
     gpu_times: Vec<f32>,
+    pipeline_cache: vk::PipelineCache,
+    /// Where `pipeline_cache` is written on exit; `None` keeps it in memory only.
+    cache_path: Option<std::path::PathBuf>,
 }
 
 // Raw Vulkan handles are plain integers/pointers that may be used from any thread as long as access
@@ -535,6 +538,13 @@ impl VulkanBackend {
                     None,
                 )
                 .map_err(err("query pool"))?;
+            // Pipelines compile once per run otherwise; the driver's cache makes the next start
+            // skip that work. A cache from another driver is ignored by Vulkan itself.
+            let cache_path = desc.cache_dir.map(|d| d.join("pipelines-vulkan.bin"));
+            let initial = cache_path.as_ref().and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+            let pipeline_cache = device
+                .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default().initial_data(&initial), None)
+                .unwrap_or(vk::PipelineCache::null());
             let mut backend = VulkanBackend {
                 _entry: entry,
                 instance,
@@ -569,6 +579,8 @@ impl VulkanBackend {
                 device_name,
                 queries,
                 ts_period: props.limits.timestamp_period,
+                pipeline_cache,
+                cache_path,
                 gpu_times: Vec::new(),
             };
             backend.recreate_swapchain()?;
@@ -1292,7 +1304,7 @@ impl Backend for VulkanBackend {
             .layout(layout)
             .push_next(&mut rendering);
         let result = unsafe {
-            self.device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+            self.device.create_graphics_pipelines(self.pipeline_cache, &[info], None)
         };
         unsafe {
             self.device.destroy_shader_module(vs, None);
@@ -1317,7 +1329,7 @@ impl Backend for VulkanBackend {
         let stage =
             vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(cs).name(&name);
         let info = vk::ComputePipelineCreateInfo::default().stage(stage).layout(layout);
-        let result = unsafe { self.device.create_compute_pipelines(vk::PipelineCache::null(), &[info], None) };
+        let result = unsafe { self.device.create_compute_pipelines(self.pipeline_cache, &[info], None) };
         unsafe { self.device.destroy_shader_module(cs, None) };
         let raw = result.map_err(|(_, e)| Error(format!("compute pipeline {}: {e:?}", desc.label)))?[0];
         Ok(PipelineId(self.pipelines.insert(Pipeline {
@@ -1691,6 +1703,17 @@ impl Drop for VulkanBackend {
                     self.device.destroy_pipeline_layout(p.layout, None);
                     self.device.destroy_descriptor_set_layout(p.set_layout, None);
                 }
+            }
+            if let Some(path) = &self.cache_path {
+                if let Ok(data) = self.device.get_pipeline_cache_data(self.pipeline_cache) {
+                    if let Some(dir) = path.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    let _ = std::fs::write(path, data);
+                }
+            }
+            if self.pipeline_cache != vk::PipelineCache::null() {
+                self.device.destroy_pipeline_cache(self.pipeline_cache, None);
             }
             for s in self.samplers {
                 self.device.destroy_sampler(s, None);
