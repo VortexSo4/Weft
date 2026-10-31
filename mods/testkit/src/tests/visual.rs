@@ -292,7 +292,8 @@ pub async fn break_overlay(t: T) -> R {
     t.until("the first block broken", Duration::from_secs(2), |t| t.c().block(wall) == Some(0)).await?;
     let held = t.shot("creative").await?.px;
     // The same blocks without a button held: the next block as it looks clean.
-    t.secs(0.6).await?;
+    // Past the longest a broken block's pieces fly.
+    t.secs(1.2).await?;
     t.fill(next, add(next, [0, 1, 0]), "dirt").await?;
     t.set(wall, "air").await?;
     t.frames(10).await?;

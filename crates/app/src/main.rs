@@ -41,6 +41,7 @@ fn main() {
     };
     let mut verbose = false;
     let mut log_spec = String::new();
+    let mut server = false;
     let mut pack: Option<PathBuf> = None;
     let mut dist: Option<PathBuf> = None;
     // Options the engine does not know go to mods (`--test furnace`, `--script x.txt`).
@@ -58,6 +59,7 @@ fn main() {
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
             "--no-vsync" => opts.no_vsync = true,
+            "--server" => server = true,
             // Engine shaders and assets live from the source tree in a release build too.
             "--dev" => opts.dev = true,
             "--view" => opts.view = value().parse().ok(),
@@ -115,6 +117,13 @@ fn main() {
     }
     opts.mod_dirs.push(player_mods);
     weft_engine::init_workers();
+    if server {
+        if let Err(e) = weft_engine::dedicated::run(opts) {
+            log::error!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(e) = weft_engine::run(vulkan, opts) {
         log::error!("{e}");
         std::process::exit(1);

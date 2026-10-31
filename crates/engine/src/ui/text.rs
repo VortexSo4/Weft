@@ -80,6 +80,8 @@ pub enum Name {
     Recipe(String),
     Config(String),
     Key(String),
+    /// An entity kind, by name.
+    Entity(String),
 }
 
 /// `prefix.ns.path` for `ns:path`: how a thing's name becomes its translation key.
@@ -106,6 +108,7 @@ impl Name {
             "recipe" => Name::Recipe(id.to_string()),
             "config" => Name::Config(id.to_string()),
             "key" => Name::Key(id.to_string()),
+            "entity" => Name::Entity(id.to_string()),
             _ => return None,
         })
     }
@@ -122,6 +125,7 @@ impl Name {
             Name::Recipe(n) => format!("recipe:{n}"),
             Name::Config(n) => format!("config:{n}"),
             Name::Key(n) => format!("key:{n}"),
+            Name::Entity(n) => format!("entity:{n}"),
         }
     }
 
@@ -144,6 +148,7 @@ impl Name {
             Name::Recipe(n) => (vec![lang_key("recipe", n)], n.clone()),
             Name::Config(n) => (vec![lang_key("config", n)], n.clone()),
             Name::Key(n) => (vec![lang_key("key", n)], n.clone()),
+            Name::Entity(n) => (vec![lang_key("entity", n)], n.clone()),
         }
     }
 
@@ -490,11 +495,24 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
 }
 
 /// A name, formatted from its translation (colors and effects kept) or its raw text.
+fn egg_of(n: &Name) -> Option<String> {
+    let Name::Item(i) = n else { return None };
+    let c = crate::content::try_content()?;
+    c.components.text(crate::components::ITEM, *i, c.ids.spawn_egg?).map(str::to_string)
+}
+
 fn push_name(n: &Name, cx: &Ctx, out: &mut Vec<Span>, st: &mut State, depth: u32) {
     match n.key(cx.lang) {
         Some(k) if depth < 4 => {
             let color = st.color;
             format_depth(cx.lang.get(&k), &[], cx, out, st, color, depth + 1);
+            st.color = color;
+        }
+        // An egg nobody named is called after what hatches from it.
+        None if depth < 4 && egg_of(n).is_some() => {
+            let color = st.color;
+            let args = [Arg::Name(Name::Entity(egg_of(n).unwrap_or_default()))];
+            format_depth(cx.lang.get("item.spawn_egg"), &args, cx, out, st, color, depth + 1);
             st.color = color;
         }
         _ => push_text(out, &n.keys().1, st),

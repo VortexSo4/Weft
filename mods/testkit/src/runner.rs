@@ -627,6 +627,7 @@ pub fn frame(c: &Client) {
             }
             let def = run.queue.remove(0);
             weft_sdk::info!("testkit: --- {} ---", def.name);
+            crate::same_conditions(c);
             let t = T::new(&def.name);
             ACTIVE.with(|a| *a.borrow_mut() = Some(t.clone()));
             let fut = (def.run)(t.clone());

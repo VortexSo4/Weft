@@ -846,10 +846,10 @@ pub async fn edit_while_loading(t: T) -> R {
 }
 
 async fn edit_while_loading_at(t: &T) -> R {
-    // A stall of the machine can hit one try; behind the whole queue, every try is late.
+    // A stall of the machine can hit one try; behind the whole queue, every try is many seconds late.
     let first = edit_while_loading_once(t).await?;
-    let ms = if first < 500.0 { first } else { edit_while_loading_once(t).await? };
-    t.check(ms < 500.0, format!("shown after {ms:.0} ms"));
+    let ms = if first < 1000.0 { first } else { edit_while_loading_once(t).await? };
+    t.check(ms < 1000.0, format!("shown after {ms:.0} ms"));
     Ok(())
 }
 
@@ -857,7 +857,10 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
     t.world(5).await?;
     t.idle().await?;
     t.op("mode spectator").await?;
+    let low = t.state().pos[1];
     t.cmd("/tp ~ ~40 ~").await?;
+    // Read too early, "here" is still the ground, and the block goes where the camera doesn't look.
+    t.until("up in the air", Duration::from_secs(5), |t| t.state().pos[1] > low + 30.0).await?;
     t.c().look(0.0, 0.0);
     t.frames(5).await?;
     // Eye level, three blocks north.

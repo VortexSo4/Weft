@@ -161,8 +161,66 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Loads every library, then calls all `init`s in parallel and freezes the registries.
-pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String> {
+/// Where the mods turned off are listed, ids one a line. Automated runs keep theirs apart.
+pub fn off_file(run_dir: &Path, automated: bool) -> PathBuf {
+    run_dir.join(if automated { "test-config" } else { "config" }).join("disabled_mods.txt")
+}
+
+/// What turning mods on and off has come to, and what this run started with.
+struct Switches {
+    file: PathBuf,
+    wanted: Vec<String>,
+    at_start: Vec<String>,
+}
+
+static OFF: OnceLock<Vec<ModMeta>> = OnceLock::new();
+static SWITCHES: parking_lot::Mutex<Option<Switches>> = parking_lot::Mutex::new(None);
+
+/// Mods found but not running, for the mods screen: turned off, or needing one that is.
+pub fn turned_off() -> &'static [ModMeta] {
+    OFF.get().map_or(&[], |v| v.as_slice())
+}
+
+/// Whether a mod would run on the next start, as things are set now.
+pub fn wanted_on(id: &str) -> bool {
+    let wanted = SWITCHES.lock().as_ref().map_or(Vec::new(), |s| s.wanted.clone());
+    let metas: Vec<&ModMeta> = content::try_content().map_or(Vec::new(), |c| c.mods.iter().collect()).into_iter().chain(turned_off()).collect();
+    runs(id, &wanted, &|m| metas.iter().find(|o| o.id == m).map_or(Vec::new(), |o| o.deps.clone()))
+}
+
+/// Not itself turned off, and neither is anything it needs, however far down.
+fn runs(id: &str, off: &[String], deps: &dyn Fn(&str) -> Vec<String>) -> bool {
+    !off.iter().any(|o| o == id) && deps(id).iter().all(|d| d != id && runs(d, off, deps))
+}
+
+/// Turns a mod on or off from the next start.
+pub fn toggle(id: &str) {
+    let mut guard = SWITCHES.lock();
+    let Some(s) = guard.as_mut() else { return };
+    match s.wanted.iter().position(|w| w == id) {
+        Some(i) => drop(s.wanted.remove(i)),
+        None => s.wanted.push(id.to_string()),
+    }
+    s.wanted.sort();
+    if let Some(d) = s.file.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Err(e) = std::fs::write(&s.file, s.wanted.join("\n")) {
+        log::error!("{}: {e}", s.file.display());
+    }
+}
+
+/// Something was switched that a restart would bring in.
+pub fn restart_pending() -> bool {
+    SWITCHES.lock().as_ref().is_some_and(|s| s.wanted != s.at_start)
+}
+
+pub fn load(mod_dirs: &[PathBuf], cache: &Path, off_file: &Path) -> Result<Vec<LoadedMod>, String> {
     let start = Instant::now();
+    let mut wanted: Vec<String> = std::fs::read_to_string(off_file).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    wanted.sort();
+    *SWITCHES.lock() = Some(Switches { file: off_file.to_path_buf(), at_start: wanted.clone(), wanted: wanted.clone() });
+    let mut off: Vec<ModMeta> = Vec::new();
     let shadow = cache.join("mods");
     std::fs::create_dir_all(&shadow).ok();
     if let Ok(entries) = std::fs::read_dir(&shadow) {
@@ -176,8 +234,15 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
         // Windows locks loaded libraries; loading a copy keeps the original rebuildable.
         let copy = shadow.join(format!("{}-{}", std::process::id(), lib_path.file_name().unwrap().to_string_lossy()));
         let load_from = if std::fs::copy(&lib_path, &copy).is_ok() { copy } else { lib_path.clone() };
-        let lib = unsafe { libloading::Library::new(&load_from) }
-            .map_err(|e| format!("loading mod {name} from {}: {e}", lib_path.display()))?;
+        let lib = match unsafe { libloading::Library::new(&load_from) } {
+            Ok(lib) => lib,
+            // A mod that won't load is a good reason to have turned it off.
+            Err(_) if wanted.contains(&name) => {
+                off.push(ModMeta { id: name.clone(), version: String::new(), deps: Vec::new(), order: 0, assets: dir.join("assets") });
+                continue;
+            }
+            Err(e) => return Err(format!("loading mod {name} from {}: {e}", lib_path.display())),
+        };
         let entry: libloading::Symbol<unsafe extern "C" fn() -> *const abi::ModDecl> =
             unsafe { lib.get(abi::ENTRY_SYMBOL) }.map_err(|_| format!("{} is not a Weft mod", lib_path.display()))?;
         let decl = unsafe { &*entry() };
@@ -191,6 +256,20 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
         mods.push(LoadedMod { id, assets: dir.join("assets"), _lib: lib, decl });
     }
     mods.sort_by(|a, b| a.id.cmp(&b.id));
+    // Out go the ones turned off, then what needs them, and what needs that.
+    let deps_of = |m: &LoadedMod| -> Vec<String> { unsafe { m.decl.deps.as_slice().iter().map(|d| d.as_str().to_string()).collect() } };
+    loop {
+        let Some(i) = mods.iter().position(|m| wanted.contains(&m.id) || deps_of(m).iter().any(|d| off.iter().any(|o| &o.id == d))) else { break };
+        let m = mods.remove(i);
+        if wanted.contains(&m.id) {
+            log::info!("mod {} is turned off", m.id);
+        } else {
+            log::warn!("mod {} is off, as it needs one that is", m.id);
+        }
+        off.push(ModMeta { id: m.id.clone(), version: unsafe { m.decl.version.as_str() }.to_string(), deps: deps_of(&m), order: 0, assets: m.assets.clone() });
+    }
+    off.sort_by(|a, b| a.id.cmp(&b.id));
+    let _ = OFF.set(off);
     let _ = NAMES.set(mods.iter().map(|m| m.id.clone()).collect());
 
     let metas: Vec<ModMeta> = mods
@@ -251,6 +330,21 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mod_needs_what_it_depends_on_running() {
+        let deps = |m: &str| -> Vec<String> {
+            match m {
+                "top" => vec!["middle".to_string()],
+                "middle" => vec!["base".to_string()],
+                _ => Vec::new(),
+            }
+        };
+        let off = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(runs("top", &off(&[]), &deps));
+        assert!(!runs("top", &off(&["base"]), &deps), "all the way down");
+        assert!(runs("base", &off(&["top"]), &deps), "not the other way");
+    }
 
     /// One zip carries a library per system, and each system finds its own in it.
     #[test]

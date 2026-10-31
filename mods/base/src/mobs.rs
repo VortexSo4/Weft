@@ -178,6 +178,7 @@ pub fn register(r: &mut Registry) {
         .attach(&FUSE)
         .goals(skeleton());
     r.entity(&ARROW)
+        .no_egg()
         .size(0.5, 0.5)
         .unpushable()
         .health(1.0)

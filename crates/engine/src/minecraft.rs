@@ -159,11 +159,15 @@ fn build(
                 Some("light") => ("light", words.next().unwrap_or("")),
                 // Two pictures one above the other, for a model drawn from one texture.
                 Some("stack") => ("stack", words.next().unwrap_or("")),
+                // Colored by the game there, gray for nothing: see `dye`.
+                Some("dyed") => ("dyed", words.next().unwrap_or("")),
                 Some(s) => ("copy", s),
                 None => continue,
             };
             let next = words.next();
             let lower = (mode == "stack").then_some(next).flatten();
+            let overlay = (mode == "dyed").then_some(next).flatten();
+            let color = words.clone().next().and_then(|w| u32::from_str_radix(w, 16).ok()).filter(|_| mode == "dyed");
             let crop: Vec<u32> = match next {
                 Some("crop") => words.filter_map(|w| w.parse().ok()).collect(),
                 _ => Vec::new(),
@@ -184,6 +188,13 @@ fn build(
                 let mut px = a.rgba;
                 px.extend_from_slice(&b.rgba);
                 crate::assets::encode_png(&dst, a.width, a.height + b.height, &px).map_err(|e| e.to_string())?;
+            } else if let (Some(overlay), Some(color)) = (overlay, color) {
+                let img = crate::assets::decode_png(&png).ok_or(format!("{src}: not a png"))?;
+                let above = read(&format!("{T}{overlay}.png")).and_then(|b| crate::assets::decode_png(&b));
+                let Some(above) = above.filter(|a| (a.width, a.height) == (img.width, img.height)) else { continue };
+                let mut px = img.rgba;
+                dye(&mut px, &above.rgba, color);
+                crate::assets::encode_png(&dst, img.width, img.height, &px).map_err(|e| e.to_string())?;
             } else if mode == "glow" || mode == "light" || crop.len() == 4 {
                 let img = crate::assets::decode_png(&png).ok_or(format!("{src}: not a png"))?;
                 let (x0, y0, w, h) = if crop.len() == 4 {
@@ -263,6 +274,20 @@ fn light_to_alpha(px: &mut [u8]) {
     }
 }
 
+/// A picture the game colors as it draws, as an ordinary one: gray times the color (`rrggbb`), with
+/// what stays undyed over it.
+fn dye(px: &mut [u8], overlay: &[u8], color: u32) {
+    let tint = [(color >> 16) & 255, (color >> 8) & 255, color & 255];
+    for (p, o) in px.chunks_exact_mut(4).zip(overlay.chunks_exact(4)) {
+        let a = o[3] as u32;
+        for i in 0..3 {
+            let dyed = p[i] as u32 * tint[i] / 255;
+            p[i] = ((o[i] as u32 * a + dyed * (255 - a)) / 255) as u8;
+        }
+        p[3] = p[3].max(o[3]);
+    }
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
         let dst = to.join(e.file_name());
@@ -284,7 +309,7 @@ fn fnv(s: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::light_to_alpha;
+    use super::{dye, light_to_alpha};
 
     /// Builds the real pack from the Minecraft on this computer into `run`, as a normal start does:
     /// automated runs don't, and this needs no window. `cargo test --release -p weft_engine real_pack -- --ignored`
@@ -308,5 +333,16 @@ mod tests {
         assert_eq!(px[4..8], [255, 230, 100, 255], "the brightest stay as they are");
         assert_eq!(px[8..12], [255, 255, 127, 40], "a dim halo is its color, barely covering");
         assert_eq!(px[12..16], [255, 255, 127, 20], "alpha it already had counts");
+    }
+
+    #[test]
+    fn dyed_gray_takes_the_color_under_its_overlay() {
+        let mut px = [255, 255, 255, 255, 128, 128, 128, 255, 200, 200, 200, 255, 0, 0, 0, 0];
+        let overlay = [0, 0, 0, 0, 0, 0, 0, 0, 10, 20, 30, 255, 40, 50, 60, 255];
+        dye(&mut px, &overlay, 0xa06540);
+        assert_eq!(px[..4], [160, 101, 64, 255], "white becomes the color");
+        assert_eq!(px[4..8], [80, 50, 32, 255], "gray a darker one");
+        assert_eq!(px[8..12], [10, 20, 30, 255], "the overlay is not dyed");
+        assert_eq!(px[12..16], [40, 50, 60, 255], "and shows where nothing is under it");
     }
 }

@@ -78,6 +78,9 @@ impl Settings {
     pub fn name(&self) -> String {
         config::text(id("core:name"))
     }
+    pub fn server_port(&self) -> u16 {
+        number("core:server_port") as u16
+    }
     /// Extra iroh relay URLs; empty uses the public defaults.
     pub fn relays(&self) -> Vec<String> {
         list("core:relays")

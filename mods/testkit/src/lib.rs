@@ -71,9 +71,30 @@ fn init(r: &mut Registry) {
 }
 
 /// Tests of how quick the game is, which other processes on the machine would fail.
-const ALONE: &[&str] = &["edit_while_loading"];
+const ALONE: &[&str] = &["edit_while_loading", "skiff_smooth"];
 
 /// Builds the queue on the main thread, where the runner lives.
+/// Same conditions on every machine and for every test, whatever the one before left behind (a
+/// failure halfway, or leaving a server, which reads the player's settings back).
+pub(crate) fn same_conditions(c: &Client) {
+    use weft_sdk::settings::*;
+    // The player's packs would change every picture.
+    let packs = !RESOURCE_PACKS.get().is_empty() || !SHADER_PACK.get().is_empty();
+    LANGUAGE.set("en_us");
+    GUI_SCALE.set(2);
+    VIEW_DISTANCE.set(12);
+    FOV.set(70.0);
+    BRIGHTNESS.set(0.5);
+    VSYNC.set(true);
+    RESOURCE_PACKS.set("");
+    SHADER_PACK.set("");
+    DEBUG_GROUPS.set(u32::MAX);
+    DEBUG_LINES.set("");
+    if packs {
+        c.reload_assets();
+    }
+}
+
 fn start(c: &Client) {
     let Some((test, script)) = PLAN.get() else { return };
     if let Some(path) = script {
@@ -89,22 +110,6 @@ fn start(c: &Client) {
         runner::start(vec![runner::TestDef { name, run: Box::new(move |t| Box::pin(script::run(t, src.clone()))) }]);
         return;
     }
-    // Same conditions on every machine; nothing of this is saved.
-    {
-        use weft_sdk::settings::*;
-        LANGUAGE.set("en_us");
-        GUI_SCALE.set(2);
-        VIEW_DISTANCE.set(12);
-        FOV.set(70.0);
-        BRIGHTNESS.set(0.5);
-        VSYNC.set(true);
-        RESOURCE_PACKS.set("");
-        SHADER_PACK.set("");
-        DEBUG_GROUPS.set(u32::MAX);
-        DEBUG_LINES.set("");
-    }
-    // The player's packs would change every picture.
-    c.reload_assets();
     let want = test.as_deref().unwrap_or("all");
     // Benchmarks run by name too, or all of them with `bench`.
     let all = match want {

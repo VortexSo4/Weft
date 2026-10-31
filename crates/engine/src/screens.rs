@@ -158,6 +158,7 @@ impl Screen for ModList {
         let c = crate::content::content();
         let mut mods: Vec<&crate::content::ModMeta> = c.mods.iter().collect();
         mods.sort_by_key(|m| m.order);
+        mods.extend(crate::modloader::turned_off());
         let sel = self.selected.get().min(mods.len().saturating_sub(1));
         let tall = (cx.size.y - 120.0).clamp(80.0, 300.0);
         let icon = |id: &str| {
@@ -166,10 +167,11 @@ impl Screen for ModList {
         };
         frame(ui, cx, "mods.title", |ui| {
             ui.container(Style::row().gap(6.0), |ui| {
-                let list = ui.panel("well", Style::default().pad(4.0).gap(2.0).w(160.0).h(tall).scroll().stretch(), |ui| {
+                let list = ui.panel("well", Style::default().pad(4.0).gap(2.0).w(184.0).h(tall).scroll().stretch(), |ui| {
                     for (i, m) in mods.iter().enumerate() {
                         let s = self.selected.clone();
-                        let b = ui.button("button", Style::row().min_h(22.0).pad_xy(4.0, 2.0).gap(4.0).stretch().justify(Justify::Start), Rc::new(move |c: &mut Ctx| {
+                        ui.open(Kind::Container { class: None }, Style::row().gap(2.0).stretch());
+                        let b = ui.button("button", Style::row().min_h(22.0).pad_xy(4.0, 2.0).gap(4.0).w(150.0).justify(Justify::Start), Rc::new(move |c: &mut Ctx| {
                             s.set(i);
                             c.requests.push(Request::Rebuild);
                         }), |ui| {
@@ -183,6 +185,17 @@ impl Screen for ModList {
                             *selected = i == sel;
                         }
                         ui.set_id(b, &format!("mod:{}", m.id));
+                        // Takes effect on the next start: nothing here changes what is running.
+                        let id = m.id.clone();
+                        let on = crate::modloader::wanted_on(&m.id);
+                        let led = ui.button("button", Style::default().size(20.0, 22.0).align(crate::ui::Align::Center).justify(Justify::Center), Rc::new(move |c: &mut Ctx| {
+                            crate::modloader::toggle(&id);
+                            c.requests.push(Request::Rebuild);
+                        }), |ui| {
+                            ui.add(Kind::Image { texture: format!("core:gui/led_{}", if on { "on" } else { "off" }), color: 0xFFFFFFFF }, Style::default().size(6.0, 6.0));
+                        });
+                        ui.set_id(led, &format!("mod_led:{}", m.id));
+                        ui.close();
                     }
                 });
                 ui.set_id(list, "mod_list");
@@ -227,6 +240,13 @@ impl Screen for ModList {
                 button(ui, cx, "mods.folder", &[], 120.0, move |_| crate::packs::open_folder(&dir));
                 button(ui, cx, "menu.done", &[], 120.0, |c| c.requests.push(Request::Close));
             });
+            if crate::modloader::restart_pending() {
+                ui.container(Style::row().gap(6.0).align(crate::ui::Align::Center), |ui| {
+                    label(ui, cx, "mods.restart_note", &[], "dim");
+                    let b = button(ui, cx, "mods.restart", &[], 120.0, |c| c.requests.push(Request::Restart));
+                    ui.set_id(b, "mods_restart");
+                });
+            }
         });
     }
 }

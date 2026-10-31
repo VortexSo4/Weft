@@ -612,3 +612,33 @@ pub async fn block_dust_scatters(t: T) -> R {
     t.check(black < 0.0002, format!("black pieces: {black}"));
     Ok(())
 }
+
+/// From high above, where the view's cubes don't reach the ground, it is land all the way under
+/// the camera, not a hole of sky.
+pub async fn distant_terrain_from_above(t: T) -> R {
+    static VIEW: Config<i32> = Config::named("core:view_distance");
+    static LOD: Config<i32> = Config::named("core:lod_distance");
+    let before = (VIEW.get(), LOD.get());
+    VIEW.set(8);
+    LOD.set(256);
+    let out = async {
+        t.world(5).await?;
+        t.idle().await?;
+        t.op("mode spectator").await?;
+        let s = t.state().pos;
+        t.c().teleport([s[0], 1024.0, s[2]]);
+        t.c().look(0.0, -89.0);
+        t.until("distant terrain made", Duration::from_secs(20), |t| t.state().lod_tiles > 50 && t.state().lod_pending == 0).await?;
+        t.secs(0.5).await?;
+        let shot = t.shot("down").await?;
+        // The sky's pale blue; a cloud may be in the way, which is white.
+        let sky = shot.share(0.44, 0.42, 0.56, 0.58, |c| c[2] > 200 && c[0] > 120 && c[0] < 215);
+        t.note(format!("sky under the camera: {sky:.3}"));
+        t.check(sky < 0.05, format!("a hole in the land: {sky:.3}"));
+        Ok(())
+    }
+    .await;
+    VIEW.set(before.0);
+    LOD.set(before.1);
+    out
+}

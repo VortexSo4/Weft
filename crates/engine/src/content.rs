@@ -441,6 +441,7 @@ pub struct Ids {
     pub worn: Option<u32>,
     pub worn_texture: Option<u32>,
     pub wear_per_hit: Option<u32>,
+    pub spawn_egg: Option<u32>,
     pub attack_speed: Option<u32>,
     pub use_ticks: Option<u32>,
     pub sweeps: Option<u32>,
@@ -1029,6 +1030,12 @@ pub fn load_order(mods: &[ModMeta]) -> Vec<u32> {
 
 /// Registered tabs in mod order, filled with their tagged items in registration order; every mod
 /// with leftover items gets one more tab of its own.
+/// Whether the mod a texture's name points at has that file.
+fn picture_exists(mods: &[ModMeta], name: &str) -> bool {
+    let Some((ns, path)) = name.split_once(':') else { return false };
+    mods.iter().find(|m| m.id == ns).is_some_and(|m| m.assets.join("textures").join(format!("{path}.png")).is_file())
+}
+
 fn creative_tabs(mods: &[ModMeta], games: &[crate::registry::RawGame], items: &[ItemDef], item_names: &FxHashMap<String, u32>, c: &Components, errors: &mut Vec<String>) -> Vec<CreativeTab> {
     let mut tabs: Vec<CreativeTab> = Vec::new();
     for g in games {
@@ -1040,6 +1047,8 @@ fn creative_tabs(mods: &[ModMeta], games: &[crate::registry::RawGame], items: &[
             tabs.push(CreativeTab { name: name.clone(), icon, items: Vec::new() });
         }
     }
+    // Every entity's egg goes here, whichever mod's it is. Its icon is the first of them.
+    tabs.push(CreativeTab { name: "core:spawn_eggs".into(), icon: 0, items: Vec::new() });
     // The tag `tab/<name>` of each tab, by component id.
     let tab_of: FxHashMap<u32, usize> = tabs.iter().enumerate().filter_map(|(i, t)| c.id(&format!("tab/{}", t.name)).map(|id| (id, i))).collect();
     let mut ordered: Vec<u32> = (1..items.len() as u32).collect();
@@ -1066,6 +1075,9 @@ fn creative_tabs(mods: &[ModMeta], games: &[crate::registry::RawGame], items: &[
         tabs.push(CreativeTab { name, icon: list[0], items: list });
     }
     tabs.retain(|t| !t.items.is_empty());
+    for t in tabs.iter_mut().filter(|t| t.icon == 0) {
+        t.icon = t.items[0];
+    }
     for t in &tabs {
         log::debug!("creative tab {}: {}", t.name, t.items.iter().map(|&i| items[i as usize].name.as_str()).collect::<Vec<_>>().join(" "));
     }
@@ -1554,7 +1566,7 @@ fn number_items(mods: &[ModMeta], items: Vec<(ModId, RawItem)>, blocks: &BlockTa
         model: Vec::new(),
     }];
     let mut item_values: Vec<(ModId, Vec<RawValue>)> = vec![(ModId(u32::MAX), Vec::new())];
-    for (owner, it) in items {
+    for (owner, mut it) in items {
         let id = item_defs.len() as u32;
         write_cell(it.cell, id);
         let block = if it.block.is_empty() {
@@ -1568,6 +1580,10 @@ fn number_items(mods: &[ModMeta], items: Vec<(ModId, RawItem)>, blocks: &BlockTa
                 }
             }
         };
+        // An egg its mod drew no picture for. Packs can still replace the generic one.
+        if it.components.iter().any(|v| v.name == abi::comp::SPAWN_EGG) && !picture_exists(mods, &it.texture) {
+            it.texture = "core:item/spawn_egg".into();
+        }
         let mut icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { textures.intern(&it.texture) };
         // Its model file: a flat item of another texture, or boxes (faces it leaves to the item
         // show the icon).
@@ -1914,6 +1930,7 @@ fn component_ids(components: &Components) -> Ids {
         worn: id(abi::comp::WORN),
         worn_texture: id(abi::comp::WORN_TEXTURE),
         wear_per_hit: id(abi::comp::WEAR_PER_HIT),
+        spawn_egg: id(abi::comp::SPAWN_EGG),
         attack_speed: id(abi::comp::ATTACK_SPEED),
         use_ticks: id(abi::comp::USE_TICKS),
         sweeps: id(abi::comp::SWEEPS),

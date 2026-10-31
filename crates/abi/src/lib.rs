@@ -238,6 +238,9 @@ pub mod comp {
     pub const ATTACK_SPEED: &str = "attack_speed";
     /// Item: a full swing standing on the ground also hits what stands next to the target.
     pub const SWEEPS: &str = "sweeps";
+    /// On an item: the entity it is the spawn egg of, by name. It is called after it unless it has a
+    /// name of its own, and looks generic without a texture of its own.
+    pub const SPAWN_EGG: &str = "spawn_egg";
     /// On an item: in creative it doesn't break blocks (a sword). Client and server both read it.
     pub const NO_CREATIVE_BREAK: &str = "no_creative_break";
     /// On a biome: rain falls as snow there.

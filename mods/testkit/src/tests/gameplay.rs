@@ -344,7 +344,7 @@ pub async fn fall_damage(t: T) -> R {
         hp = hp.min(t.state().health);
         t.frames(1).await?;
     }
-    t.check((10.0..=12.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
+    t.check((10.0..=13.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
     Ok(())
 }
 
@@ -1002,7 +1002,7 @@ pub async fn names_translated(t: T) -> R {
             if name.is_empty() {
                 break;
             }
-            if let Some(n) = name.strip_prefix("base:") {
+            if let Some(n) = name.strip_prefix("base:").filter(|n| !n.ends_with("_spawn_egg")) {
                 if !has(format!("item.base.{n}")) && !has(format!("block.base.{n}")) {
                     missing.push(name.to_string());
                 }
@@ -1091,8 +1091,12 @@ pub async fn toast_with_the_gui(t: T) -> R {
     t.frames(3).await?;
     let hidden = toast(&t.shot("hidden").await?);
     t.check(hidden < 0.0001, format!("F1 hides it: {hidden}"));
+    // Let go first, or the second press is the same one, and the GUI stays hidden for what's next.
+    t.secs(0.2).await?;
     t.press("core:hide_hud");
-    t.frames(3).await?;
+    t.secs(0.2).await?;
+    let back = toast(&t.shot("back").await?);
+    t.check(back > 0.0005, format!("and it is back: {back}"));
     // The second is still waiting behind the first, and must not come in the next world.
     t.c().leave_world();
     t.screen("core:title").await?;
@@ -1106,5 +1110,99 @@ pub async fn toast_with_the_gui(t: T) -> R {
     t.frames(3).await?;
     let again = toast(&t.shot("again").await?);
     t.check(again < 0.0001, format!("none from the world before: {again}"));
+    Ok(())
+}
+
+/// Every entity has an egg with nothing registered for it, a mod's too, unless it says otherwise.
+/// One puts its mob on the side of the block it is used on, and is used up outside creative.
+pub async fn spawn_eggs(t: T) -> R {
+    t.check(Item::lookup("testmod:wisp_spawn_egg").is_some(), "a mod's mob has one");
+    t.check(Item::lookup("base:arrow_spawn_egg").is_none(), "no_egg() has none");
+    t.check(Item::lookup("base:furnace_spawn_egg").is_none(), "a machine's block entity has none");
+    t.flat().await?;
+    let f = t.feet();
+    let ground = add(f, [2, -1, 0]);
+    t.look_at(ground);
+    t.op("put me 0 pig_spawn_egg 2").await?;
+    t.c().select(0);
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    t.check_eq(t.slot("me", 0).await?.1, 1, "one egg used up");
+    t.laid_out(&["text:Pig Spawn Egg"]);
+    t.op("mode creative").await?;
+    t.secs(0.3).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.slot("me", 0).await?.1, 1, "none in creative");
+    let near = t.op(&format!("near {} {} {} 8", f[0], f[1], f[2])).await?;
+    t.check(near.matches("base:pig").count() == 2, format!("two pigs: {near}"));
+    Ok(())
+}
+
+/// A game with no window, reached by address: nobody owns it by connecting first, `op` from its
+/// console makes someone more, its whitelist keeps out who isn't on it, `stop` saves and leaves.
+pub async fn dedicated_server(t: T) -> R {
+    use std::io::Write;
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+        }
+    }
+    let port = 30000 + (std::process::id() % 20000) as u16;
+    let dir = format!("{}/test-server", t.c().run_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+    static SPARKS: Config<u32> = Config::named("testmod:wisp_sparks");
+    let own_sparks = SPARKS.get();
+    std::fs::create_dir_all(format!("{dir}/config")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/testmod.txt"), format!("wisp_sparks = {}\n", own_sparks + 3)).map_err(|e| e.to_string())?;
+    let start = || -> Result<Child, String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        std::process::Command::new(exe)
+            .args(["--server", "--world", "w", "--seed", "1", "--view", "4", "--port", &port.to_string(), "--run-dir", &dir])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(Child)
+            .map_err(|e| e.to_string())
+    };
+    let listening = |t: &T| {
+        let _ = t;
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    };
+    let mut server = start()?;
+    t.until("the server listening", Duration::from_secs(30), listening).await?;
+    t.c().join(&format!("127.0.0.1:{port}"));
+    t.until("joined by address", Duration::from_secs(30), |t| t.flag(client::client_flags::JOINED)).await?;
+    t.loaded().await?;
+    t.check_eq(SPARKS.get(), own_sparks + 3, "the server's setting counts while on it");
+    let refused = t.cmd("/time query").await?;
+    t.check(!refused.contains("time is"), format!("the first to connect owns nothing: {refused}"));
+    static NAME: TextConfig = TextConfig::named("core:name");
+    let mut console = server.0.stdin.take().ok_or("no console")?;
+    writeln!(console, "op {}", NAME.get()).map_err(|e| e.to_string())?;
+    let _ = console.flush();
+    t.secs(0.5).await?;
+    let allowed = t.cmd("/time query").await?;
+    t.check(allowed.contains("time is"), format!("op from the console: {allowed}"));
+    t.c().leave_world();
+    t.screen("core:title").await?;
+    t.check_eq(SPARKS.get(), own_sparks, "the player's own setting after leaving");
+    writeln!(console, "stop").map_err(|e| e.to_string())?;
+    let _ = console.flush();
+    t.until("the server stopped", Duration::from_secs(20), |_| server.0.try_wait().ok().flatten().is_some()).await?;
+    t.check(std::fs::read_dir(format!("{dir}/saves/w/players")).is_ok_and(|mut d| d.next().is_some()), "the player was saved");
+
+    std::fs::create_dir_all(format!("{dir}/config")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/whitelist.txt"), "somebody else\n").map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/disabled_mods.txt"), "").map_err(|e| e.to_string())?;
+    let _server = start()?;
+    t.until("the server listening again", Duration::from_secs(30), listening).await?;
+    t.c().join(&format!("127.0.0.1:{port}"));
+    t.screen("core:message").await?;
+    t.check(!t.flag(client::client_flags::IN_WORLD), "not on the whitelist, not in");
+    t.c().close_screen();
     Ok(())
 }

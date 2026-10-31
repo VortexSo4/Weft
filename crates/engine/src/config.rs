@@ -100,6 +100,8 @@ static AUTOMATED: AtomicBool = AtomicBool::new(false);
 /// Values given on the command line for this run: (id, value in the file). Saving keeps the
 /// file's value unless the setting was changed since.
 static OVERRIDES: Mutex<Vec<(u32, String, String)>> = Mutex::new(Vec::new());
+/// Values of the remote server this player is on, kept the same way until leaving it.
+static FROM_SERVER: Mutex<Vec<(u32, String, String)>> = Mutex::new(Vec::new());
 
 fn values() -> &'static [AtomicU64] {
     VALUES.get_or_init(|| content().game.configs.iter().map(|d| AtomicU64::new(d.default.to_bits())).collect())
@@ -185,11 +187,17 @@ pub fn put_from_server(id: u32, v: f64) {
     put(id, v);
     let now = shown(id);
     if now != saved {
-        let mut overrides = OVERRIDES.lock().unwrap();
+        let mut server = FROM_SERVER.lock().unwrap();
         // A later value from the server: what the file should keep is still the first one's.
-        let saved = overrides.iter().position(|o| o.0 == id).map_or(saved, |i| overrides.remove(i).2);
-        overrides.push((id, now, saved));
+        let saved = server.iter().position(|o| o.0 == id).map_or(saved, |i| server.remove(i).2);
+        server.push((id, now, saved));
     }
+}
+
+/// Off a remote server: what it decided is over, the player's own settings are back.
+pub fn left_server(run_dir: &Path) {
+    FROM_SERVER.lock().unwrap().clear();
+    load(run_dir);
 }
 
 /// A value as its file writes it.
@@ -258,12 +266,12 @@ fn file(run_dir: &Path, dir: &str, ns: &str) -> std::path::PathBuf {
 /// Writes a namespace's settings, every one of them so players see what exists.
 pub fn save(run_dir: &Path, ns: &str) {
     let c = content();
-    let overrides = OVERRIDES.lock().unwrap().clone();
+    let (overrides, server) = (OVERRIDES.lock().unwrap().clone(), FROM_SERVER.lock().unwrap().clone());
     let mut out = String::new();
     for (id, d) in c.game.configs.iter().enumerate().filter(|(_, d)| d.scope != scope::WORLD) {
         let Some(key) = d.name.strip_prefix(ns).and_then(|k| k.strip_prefix(':')) else { continue };
-        let now = shown(id as u32);
-        let value = overrides.iter().find(|o| o.0 == id as u32 && o.1 == now).map_or(now, |o| o.2.clone());
+        let kept = |list: &[(u32, String, String)], now: String| list.iter().find(|o| o.0 == id as u32 && o.1 == now).map_or(now.clone(), |o| o.2.clone());
+        let value = kept(&overrides, kept(&server, shown(id as u32)));
         out.push_str(&format!("{key} = {value}\n"));
     }
     let path = file(run_dir, if AUTOMATED.load(Ordering::Relaxed) { "test-config" } else { "config" }, ns);
@@ -319,6 +327,8 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::text("core:debug_lines", ""),
         ConfigDef::text("core:name", &user),
         ConfigDef::text("core:relays", ""),
+        // Where others reach this game by address; forward it, TCP and UDP.
+        ConfigDef::number("core:server_port", ck::INT, 27182.0, 1.0, 65535.0, 1.0),
         ConfigDef::text("core:resource_packs", ""),
         ConfigDef::text("core:shader_pack", ""),
         ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:mob_spawning", ck::BOOL, 1.0, 0.0, 1.0, 0.0) },

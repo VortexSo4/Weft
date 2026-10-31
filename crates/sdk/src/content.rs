@@ -171,6 +171,9 @@ pub type CreativeTab = Handle<kind::CreativeTab>;
 pub type Question = Handle<kind::Question>;
 pub type Chain = Handle<kind::Chain>;
 pub type Attribute = Handle<kind::Attribute>;
+
+/// The creative tab every entity's spawn egg goes to.
+pub static SPAWN_EGGS: CreativeTab = CreativeTab::named("core:spawn_eggs");
 pub type RecipeKind = Handle<kind::RecipeKind>;
 pub type LootTable = Handle<kind::LootTable>;
 pub type TextCondition = Handle<kind::TextCondition>;
@@ -1207,6 +1210,21 @@ impl ItemBuilder<'_> {
     pub fn wearable(self, slot: &EquipmentSlot, inflate: f32, texture: &str) -> Self {
         let tex = crate::asset("entity", texture);
         self.tag(&format!("worn/{}", slot.name())).set(&c::WORN, abi::Worn { roles: 0, inflate }).set_text(&c::WORN_TEXTURE, &tex)
+    }
+
+    /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities
+    /// have an egg of their own without this; it is for something else that hatches one.
+    pub fn spawns(mut self, entity: &'static crate::Entity) -> Self {
+        self.components.push(Pending::text(abi::comp::SPAWN_EGG, entity.name()));
+        self.on_use(move |u| {
+            let Some((p, face)) = u.target() else { return false };
+            let (w, side) = (u.world(), [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]][face as usize % 6]);
+            w.spawn(entity, [(p[0] + side[0]) as f64 + 0.5, (p[1] + side[1]) as f64, (p[2] + side[2]) as f64 + 0.5]);
+            if !w.creative(u.player()) {
+                u.set_stack(crate::StackData::shrink(u.stack(), 1));
+            }
+            true
+        })
     }
 
     pub fn on_use(mut self, f: impl Fn(&mut ItemUse) -> bool + Send + Sync + 'static) -> Self {

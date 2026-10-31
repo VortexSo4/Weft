@@ -9,6 +9,15 @@ impl Server {
             self.players[pi].conn.send(ToClient::Disconnect(format!("{name} is already playing")));
             return;
         }
+        // Read each time, so a key added takes effect with no restart. The key is what the
+        // connection proved, not what the client claims.
+        if let Some(Ok(list)) = self.cfg.whitelist.as_ref().map(std::fs::read_to_string) {
+            if !list.lines().any(|l| l.trim() == key) {
+                log::info!("{name} is not on the whitelist; to let them in, add this line: {key}");
+                self.players[pi].conn.send(ToClient::Disconnect("not on this server's whitelist".into()));
+                return;
+            }
+        }
         let saved = self.storage.as_ref().and_then(|s| load_player(c, &s.lock(), &key));
         let spawn = || (c.spawn_dim, self.dims[c.spawn_dim as usize].spawn_point(c));
         let (dim, pos, health, inv, comps, look, selected, flying, fire) = match saved {
@@ -38,7 +47,7 @@ impl Server {
         (e.yaw, e.pitch) = (look[0], look[1]);
         (e.flying, e.fire) = (flying, fire);
         // The first connection is the one playing on this machine, the world's owner.
-        let permission = if pi == 0 { abi::permission::OWNER } else { self.storage.as_ref().and_then(|s| s.lock().meta.ops.iter().find(|o| o.0 == key).map(|o| o.1)).unwrap_or(abi::permission::EVERYONE) };
+        let permission = if pi == 0 && !self.cfg.dedicated { abi::permission::OWNER } else { self.storage.as_ref().and_then(|s| s.lock().meta.ops.iter().find(|o| o.0 == key).map(|o| o.1)).unwrap_or(abi::permission::EVERYONE) };
         e.permission = permission;
         e.selected = selected.min(c.game.player_layout.hotbar.saturating_sub(1));
         let selected = e.selected;

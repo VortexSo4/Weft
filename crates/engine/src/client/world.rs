@@ -200,9 +200,13 @@ impl ClientWorld {
     /// Whether column `col` shows its ground: from the top of the view down, every cube is here
     /// and drawn, down to the first that is not air (distant terrain stands in until then).
     /// Above the camera a cube not here yet is taken for air: those are the new top of the view
-    /// while rising, nearly always sky.
-    pub fn column_shown(&self, col: IVec2) -> bool {
-        shows_ground(self.range, self.eye, |y| self.cubes.get(&IVec3::new(col.x, y, col.y)).map(|s| (s.shown, s.cube.uniform_state() == Some(AIR), s.sky & ABOVE != 0)))
+    /// while rising, nearly always sky. Nothing but air all the way down means the same, unless
+    /// the land lies under what the view reaches, seen from high up: that is left to distant terrain.
+    pub fn column_shown(&self, col: IVec2, seed: u64) -> bool {
+        let lo = self.range.0;
+        let def = &crate::content::content().dims[self.dim as usize];
+        let land_below = || def.column(seed, col.x * 16 + 8, col.y * 16 + 8).is_some_and(|c| c.height >> 4 < lo);
+        shows_ground(self.range, self.eye, land_below, |y| self.cubes.get(&IVec3::new(col.x, y, col.y)).map(|s| (s.shown, s.cube.uniform_state() == Some(AIR), s.sky & ABOVE != 0)))
     }
 
     /// Columns whose `column_shown` may have changed since the last call.
@@ -747,7 +751,7 @@ const ABOVE: u32 = 1 << 22;
 /// `column_shown` over a column's cubes by height: (drawn, all air, nothing but sky above it for
 /// now), `None` when not here. Cubes missing under the camera may still hold ground, unless the
 /// next one down says they are the sky over a column whose ground came first.
-fn shows_ground(range: (i32, i32), eye: i32, cube: impl Fn(i32) -> Option<(bool, bool, bool)>) -> bool {
+fn shows_ground(range: (i32, i32), eye: i32, land_below: impl FnOnce() -> bool, cube: impl Fn(i32) -> Option<(bool, bool, bool)>) -> bool {
     let (lo, hi) = range;
     let mut gap = false;
     for y in (lo..=hi).rev() {
@@ -764,7 +768,7 @@ fn shows_ground(range: (i32, i32), eye: i32, cube: impl Fn(i32) -> Option<(bool,
             _ => return false,
         }
     }
-    hi >= lo && !gap
+    hi >= lo && !gap && !land_below()
 }
 
 #[cfg(test)]
@@ -781,15 +785,23 @@ mod tests {
             1 => Some((true, true, false)),
             _ => None,
         };
-        assert!(shows_ground((0, 4), 1, cube), "missing cubes above the camera");
-        assert!(!shows_ground((0, 4), 4, cube), "missing cubes below the camera");
+        assert!(shows_ground((0, 4), 1, || false, cube), "missing cubes above the camera");
+        assert!(!shows_ground((0, 4), 4, || false, cube), "missing cubes below the camera");
         // The ground came first: what is missing over it is sky.
         let cube = |y: i32| match y {
             0 => Some((true, false, false)),
             1 => Some((true, true, true)),
             _ => None,
         };
-        assert!(shows_ground((0, 4), 4, cube), "only sky missing below the camera");
+        assert!(shows_ground((0, 4), 4, || false, cube), "only sky missing below the camera");
+    }
+
+    /// High up, all the air the view reaches isn't what the column looks like: the land is below.
+    #[test]
+    fn column_of_air_over_land_is_not_shown() {
+        let air = |_: i32| Some((true, true, true));
+        assert!(!shows_ground((60, 70), 65, || true, air), "land under what the view reaches");
+        assert!(shows_ground((60, 70), 65, || false, air), "dug out, or nothing there");
     }
 
     /// The whole-cube copy gives what reading every block does.
