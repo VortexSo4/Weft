@@ -175,6 +175,7 @@ hud.element.base.health = Health
 hud.element.base.armor = Armor
 hud.element.base.food = Food
 hud.element.base.air = Air
+hud.element.base.attack_indicator = Attack indicator
 command.base.advancements = {0} of {1} advancements made
 key.base.advancements = Advancements
 advancements.base.title = Advancements

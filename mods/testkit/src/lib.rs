@@ -97,6 +97,7 @@ fn start(c: &Client) {
         RESOURCE_PACKS.set("");
         SHADER_PACK.set("");
         DEBUG_GROUPS.set(u32::MAX);
+        DEBUG_LINES.set("");
     }
     // The player's packs would change every picture.
     c.reload_assets();

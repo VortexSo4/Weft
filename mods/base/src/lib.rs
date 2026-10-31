@@ -13,7 +13,7 @@ mod worldgen;
 
 use weft_sdk::*;
 
-pub use base_api::{FLATLANDS, OVERWORLD, tabs};
+pub use base_api::{CLOUDS, FLATLANDS, MOON, OVERWORLD, STARS, SUN, tabs};
 
 declare_mod!(deps: [], init: init);
 
@@ -44,7 +44,8 @@ fn init(r: &mut Registry) {
     r.dimension(&OVERWORLD)
         .player_spawn()
         .sky_above(16)
-        .day_length(24000);
+        .day_length(24000)
+        .weather();
     // Second dimension on purpose: nothing in the engine may assume there is only one world.
     r.dimension(&FLATLANDS)
         .generator(worldgen::flat)
@@ -55,4 +56,10 @@ fn init(r: &mut Registry) {
         .fixed_time(6000)
         .gravity(20.0)
         .sky(0xb0c8ff, 0xe0e8ff);
+    for dim in [&OVERWORLD, &FLATLANDS] {
+        r.sky_stars(dim, &STARS).count(1500);
+        r.sky_clouds(dim, &CLOUDS).texture("clouds");
+        r.sky_body(dim, &SUN).texture("sun").size(33.0).glow(0xFFE633);
+        r.sky_body(dim, &MOON).texture("moon_phases").frames(4, 2).size(23.0).phase(0.5);
+    }
 }

@@ -51,29 +51,35 @@ fn int(v: impl TryInto<i64>) -> Arg {
     Arg::Int(v.try_into().unwrap_or(i64::MAX))
 }
 
-pub const COMMANDS: &[(&str, &str, Handler)] = &[
-    ("help", "[command:word]", help),
-    ("tp", "<pos:pos> | <to:targets> | <who:targets> <pos:pos> | <who:targets> <to:targets>", tp),
-    ("dim", "<dim:dim> [who:targets]", dim),
-    ("give", "<who:targets> <item:item> [count:int] | <item:item> [count:int]", give),
-    ("time", "set <time:time> | add <ticks:int> | query", time),
-    ("summon", "<entity:entity> [pos:pos] [count:int]", summon),
-    ("kill", "[who:targets]", kill),
-    ("setblock", "<pos:pos> <block:block>", set_block),
-    ("insert", "<pos:pos> <item:item> [count:int]", insert),
-    ("block", "<pos:pos>", block),
-    ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]", game_mode),
-    ("heal", "[who:targets]", heal),
-    ("tick", "query | rate <tps:int> | freeze | unfreeze | step [ticks:int] | sprint <ticks:int>", tick),
-    ("regions", "", regions),
-    ("rule", "[name:word(#core:rules)] [value:int]", rule),
+use weft_abi::permission as p;
+
+/// Name, usage, what it does, the permission level it asks for.
+pub const COMMANDS: &[(&str, &str, Handler, u32)] = &[
+    ("help", "[command:word]", help, p::EVERYONE),
+    ("tp", "<pos:pos> | <to:targets> | <who:targets> <pos:pos> | <who:targets> <to:targets>", tp, p::GAME_MASTER),
+    ("dim", "<dim:dim> [who:targets]", dim, p::GAME_MASTER),
+    ("give", "<who:targets> <item:item> [count:int] | <item:item> [count:int]", give, p::GAME_MASTER),
+    ("time", "set <time:time> | add <ticks:int> | query", time, p::GAME_MASTER),
+    ("summon", "<entity:entity> [pos:pos] [count:int]", summon, p::GAME_MASTER),
+    ("kill", "[who:targets]", kill, p::GAME_MASTER),
+    ("setblock", "<pos:pos> <block:block>", set_block, p::GAME_MASTER),
+    ("insert", "<pos:pos> <item:item> [count:int]", insert, p::GAME_MASTER),
+    ("block", "<pos:pos>", block, p::GAME_MASTER),
+    ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]", game_mode, p::GAME_MASTER),
+    ("heal", "[who:targets]", heal, p::GAME_MASTER),
+    ("tick", "query | rate <tps:int> | freeze | unfreeze | step [ticks:int] | sprint <ticks:int>", tick, p::ADMIN),
+    ("regions", "", regions, p::GAME_MASTER),
+    ("weather", "clear [ticks:int] | rain [ticks:int] | thunder [ticks:int]", weather, p::GAME_MASTER),
+    ("op", "<who:targets> [level:int]", op, p::ADMIN),
+    ("deop", "<who:targets>", deop, p::ADMIN),
+    ("rule", "[name:word(#core:rules)] [value:int]", rule, p::ADMIN),
 ];
 
-fn help(_s: &mut Server, x: &Ctx) -> Vec<Msg> {
+fn help(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let (c, a) = (x.c, x.a);
     match a.text("command") {
         Some(n) => c.commands.iter().find(|d| d.name == n).map_or_else(|| say("unknown", vec![text(n)]), |d| say("usage_line", vec![text(&d.name), text(&d.usage)])),
-        None => c.commands.iter().flat_map(|d| say("usage_line", vec![text(&d.name), text(&d.usage)])).collect(),
+        None => c.commands.iter().filter(|d| d.level <= s.permission_of(x.pi)).flat_map(|d| say("usage_line", vec![text(&d.name), text(&d.usage)])).collect(),
     }
 }
 
@@ -121,16 +127,21 @@ fn give(s: &mut Server, x: &Ctx) -> Vec<Msg> {
 fn time(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let (c, a, me) = (x.c, x.a, x.me);
     let d = &mut s.dims[me.0 as usize];
-    let len = c.dims[d.id as usize].day_length.max(1) as u64;
+    let day_length = c.dims[d.id as usize].day_length;
+    let len = day_length.max(1) as u64;
+    let day = d.day_time();
     if a.get("query").is_some() {
-        return say("time.query", vec![int(d.time % len), int(d.time / len), int(d.time)]);
+        return say("time.query", vec![int(day % len), int(day / len), int(d.time)]);
+    }
+    if day_length == 0 {
+        return say("time.fixed", Vec::new());
     }
     let now = match (a.int("time"), a.int("ticks")) {
-        (Some(t), _) => d.time - d.time % len + t.max(0) as u64,
-        (None, Some(add)) => d.time.saturating_add_signed(add),
-        _ => d.time,
+        (Some(t), _) => day - day % len + t.max(0) as u64,
+        (None, Some(add)) => day.saturating_add_signed(add),
+        _ => day,
     };
-    d.set_time(now);
+    d.set_day_time(now);
     say("time.set", vec![int(now % len)])
 }
 
@@ -212,13 +223,51 @@ fn game_mode(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     say("gamemode.done", vec![Arg::Key(format!("gamemode.{}", mode.name())), int(who.len())])
 }
 
+fn weather(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    let d = &mut s.dims[x.me.0 as usize];
+    if !x.c.dims[d.id as usize].weather {
+        return say("weather.none", Vec::new());
+    }
+    let (raining, thunder) = (x.a.get("rain").is_some() || x.a.get("thunder").is_some(), x.a.get("thunder").is_some());
+    let ticks = x.a.int("ticks").map_or(12000, |t| t.max(1) as u64);
+    d.set_weather(raining, thunder, ticks);
+    say("weather.done", Vec::new())
+}
+
+/// `/op`: nobody gives out more than it has itself.
+fn set_level(s: &mut Server, x: &Ctx, level: u32) -> Vec<Msg> {
+    let own = s.permission_of(x.pi);
+    if level > own {
+        return say("op.too_high", vec![int(own)]);
+    }
+    let mut lines = Vec::new();
+    for (_, id) in x.targets(s, "who") {
+        if let Some(pi) = s.players.iter().position(|p| p.joined && p.entity == id) {
+            s.set_permission(pi, level);
+            lines.extend(say("op.done", vec![text(&s.players[pi].name), int(level)]));
+        }
+    }
+    lines
+}
+
+fn op(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    let level = x.a.int("level").map_or(weft_abi::permission::OWNER, |l| l.clamp(0, weft_abi::permission::OWNER as i64) as u32);
+    set_level(s, x, level)
+}
+
+fn deop(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    set_level(s, x, weft_abi::permission::EVERYONE)
+}
+
 fn heal(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let c = x.c;
     for (d, id) in x.targets(s, "who") {
         if let Some(r) = s.dims[d as usize].entity_region(id) {
             let max = r.max_health(c, id);
             if let Some(e) = r.entities.get_mut(id) {
-                e.health = max;
+                if e.alive() {
+                    e.health = max;
+                }
             }
         }
     }

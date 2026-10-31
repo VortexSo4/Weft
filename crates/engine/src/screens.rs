@@ -496,6 +496,7 @@ impl Screen for SettingsScreen {
                 d.open(&panel, |d| {
                     d.slider("settings.view_distance", "core:view_distance", 1.0);
                     d.slider("settings.lod_distance", "core:lod_distance", 1.0);
+                    d.slider("settings.cloud_height", "core:cloud_height", 1.0);
                     d.slider("settings.fov", "core:fov", 1.0);
                     d.slider("settings.sensitivity", "core:sensitivity", 100.0);
                     d.slider("settings.brightness", "core:brightness", 100.0);
@@ -749,7 +750,10 @@ impl Screen for Controls {
             return true;
         }
         let action = self.waiting.take().unwrap_or_default();
-        if key != Key::Code(winit::keyboard::KeyCode::Escape) {
+        // Only a key the settings file can name: anything else would be back to the default
+        // after a restart.
+        let can_save = matches!(key, Key::Mouse(_)) || crate::settings::parse_key(&crate::input::key_name(key)).is_some();
+        if key != Key::Code(winit::keyboard::KeyCode::Escape) && can_save {
             ctx.requests.push(Request::Rebind(action, crate::input::Chord { key, mods: ctx.input.mods() }));
         }
         self.modifier = None;

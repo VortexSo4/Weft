@@ -51,6 +51,9 @@ static BATTERY_MENU: Menu = Menu::named("battery");
 use base_api::SMELTING as SMELTING_RECIPES;
 static VOID: Dimension = Dimension::named("void");
 static MARS: Dimension = Dimension::named("mars");
+static MARS_SUN: SkyObject = SkyObject::named("mars_sun");
+static PHOBOS: SkyObject = SkyObject::named("phobos");
+static DEIMOS: SkyObject = SkyObject::named("deimos");
 static DUST: Biome = Biome::named("dust");
 static SCORCHED: Biome = Biome::named("scorched");
 static REGOLITH: Block = Block::named("regolith");
@@ -211,6 +214,10 @@ fn init(r: &mut Registry) {
         .gravity(12.0)
         .fixed_time(5000)
         .sky(0xd8a080, 0xe0b090);
+    // Two moons of their own, unrelated to the fixed time of day, and a sun that stands still.
+    r.sky_body(&MARS, &MARS_SUN).texture("base:sun").size(18.0).still().phase(0.2);
+    r.sky_body(&MARS, &PHOBOS).texture("phobos").size(10.0).orbit(600.0).tilt(30.0);
+    r.sky_body(&MARS, &DEIMOS).texture("phobos").size(5.0).orbit(-2400.0).phase(0.6).tilt(-15.0).color(0xFFD0B0);
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid(&OIL).opacity(4).drag(0.4).flow_delay(15).drop_off(2).slope_find(3).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);

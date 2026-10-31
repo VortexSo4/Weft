@@ -29,6 +29,9 @@ pub struct SlotRef {
 }
 
 pub struct OpenMenu {
+    /// Opened by using a block, so it closes when the player walks away. A mod opening it from
+    /// code (a remote terminal) means it to work from anywhere.
+    pub on_block: bool,
     pub kind: u32,
     pub owner: u64,
     pub slots: Vec<SlotRef>,
@@ -135,6 +138,7 @@ pub fn slots(c: &Content, kind: u32, owner: u64) -> Vec<SlotRef> {
 pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64) -> OpenMenu {
     let def = &c.game.menus[kind as usize];
     let mut m = OpenMenu {
+        on_block: false,
         kind,
         owner,
         slots: slots(c, kind, owner),
@@ -146,6 +150,17 @@ pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64) -> O
     };
     call(&mut m, dim, c, player, 0, |d| d.on_change);
     m
+}
+
+/// Whether what the menu is on is gone or too far away: modern's reach to a block plus 4. Virtual
+/// inventories have no place to walk away from.
+pub fn out_of_reach(m: &OpenMenu, dim: &Dim, player: u64) -> bool {
+    if m.owner == 0 {
+        return false;
+    }
+    let Some(owner) = dim.entities.get(m.owner).filter(|o| !o.removed) else { return true };
+    let Some(anchor) = owner.anchor.filter(|_| m.on_block) else { return false };
+    dim.entities.get(player).is_none_or(|p| (p.pos - (anchor.as_dvec3() + glam::DVec3::splat(0.5))).length_squared() > 8.5 * 8.5)
 }
 
 pub fn tick(m: &mut OpenMenu, dim: &mut Dim, c: &Content, player: u64) {
@@ -267,6 +282,17 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         if shift {
             // Craft into the inventory as long as the result stays the same and fits entirely;
             // a result that does not fit is not taken (no partial inserts, no lost ingredients).
+            // A furnace's output is real items, and as many as fit go.
+            if r.owner != Owner::Temp {
+                let rest = dim.entities.insert_item(c, player, cur);
+                if rest.count != cur.count {
+                    dim.entities.dirty_inv.insert(player);
+                    set(m, dim, player, slot, rest);
+                    call(m, dim, c, player, slot, |d| d.on_take);
+                    call(m, dim, c, player, slot, |d| d.on_change);
+                }
+                return;
+            }
             for _ in 0..max(cur.item).max(64) {
                 let now = get(m, dim, player, slot);
                 if now.is_empty() || now.item != cur.item || now.data != cur.data {
@@ -309,7 +335,8 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         let mut targets: Vec<u32> = (0..m.slots.len() as u32)
             .filter(|&i| {
                 let s = m.slots[i as usize];
-                i != slot && s.flags & sf::OUTPUT == 0 && (s.owner == Owner::Player) != from_player && fits(c, &s, cur.item)
+                // Not into a crafting grid: temporary slots are filled by hand.
+                i != slot && s.flags & sf::OUTPUT == 0 && s.owner != Owner::Temp && (s.owner == Owner::Player) != from_player && fits(c, &s, cur.item)
             })
             .collect();
         targets.sort_by_key(|&i| -m.slots[i as usize].priority);

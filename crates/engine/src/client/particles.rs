@@ -104,6 +104,10 @@ impl Particles {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.list.clear();
+    }
+
     pub fn len(&self) -> usize {
         self.list.len()
     }
@@ -189,6 +193,9 @@ impl Particles {
                     }
                 }
                 p.on_ground = r.on_ground || (p.on_ground && r.hit[1]);
+                if p.on_ground && k.flags & pf::DIES_ON_LAND != 0 {
+                    p.age = p.life;
+                }
                 if p.on_ground {
                     p.vel.x *= ground;
                     p.vel.z *= ground;

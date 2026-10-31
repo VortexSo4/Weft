@@ -23,6 +23,7 @@ enum Part {
     Hotbar,
     HeldName,
     Crosshair,
+    PlayerList,
     Chat,
     /// `DEBUG_GROUPS[i]`.
     DebugGroup(usize),
@@ -270,7 +271,9 @@ impl Hud {
         let fade = if held.is_empty() { 0 } else { ((2.0 - since.elapsed().as_secs_f32()) / 0.5 * 16.0).clamp(0.0, 16.0) as u8 };
         // Free elements are placed from the window's size; narrow screens stack the debug panels.
         let size = (self.ui.size.x as i32, self.ui.size.y as i32);
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, size, (held.item, held.data, fade));
+        // Tab, and only over the game: in the chat it completes.
+        let list_shown = input.captured && input.held("core:player_list");
+        let key = (debug, chat_visible, client.chat.len() | (list_shown as usize) << 32, client.dead, groups, client.mode as u8, size, (held.item, held.data, fade));
         if self.key == Some(key) {
             return false;
         }
@@ -299,6 +302,7 @@ impl Hud {
             ("core:hotbar".into(), a::HOTBAR.into(), 0, Part::Hotbar),
             ("core:held_name".into(), a::ABOVE_HOTBAR.into(), 0, Part::HeldName),
             ("core:crosshair".into(), CENTER.into(), 0, Part::Crosshair),
+            ("core:player_list".into(), CENTER.into(), 2, Part::PlayerList),
             ("core:chat".into(), CHAT.into(), 0, Part::Chat),
             ("core:debug.help".into(), a::DEBUG_LEFT.into(), i32::MAX, Part::DebugHelp),
         ];
@@ -349,6 +353,16 @@ impl Hud {
                 });
             }
             Part::Crosshair => drop(ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0))),
+            Part::PlayerList if list_shown || editing => {
+                let mut style = Style::default().pad(4.0).gap(1.0);
+                style.at = Some([0.0, 12.0 - ui.size.y / 2.0, 0.5, 0.0]);
+                ui.panel("panel", style, |ui| {
+                    for name in client.players.iter() {
+                        ui.text(text::rich(&text::escape(name), lang, None), "label");
+                    }
+                });
+            }
+            Part::PlayerList => {}
             Part::Chat if chat_visible > 0 => crate::game_screens::chat_lines(ui, client, lang, input, false),
             Part::Chat if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_chat"), lang, None), "chat")),
             Part::Chat => {}
@@ -405,6 +419,13 @@ impl Hud {
         for e in at(CENTER, false) {
             emit(ui, e, Style::default().self_align(Align::Center), Align::Start);
         }
+        // No height of its own, so what is under the crosshair doesn't move it off the center.
+        ui.container(Style::default().h(0.0).gap(1.0).self_align(Align::Center).align(Align::Center), |ui| {
+            ui.container(Style::default().h(3.0), |_| {});
+            for e in at(a::UNDER_CROSSHAIR, false) {
+                emit(ui, e, Style::default(), Align::Center);
+            }
+        });
         ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Stretch).pad(2.0).gap(1.0), |ui| {
             for e in at(CHAT, false) {
                 emit(ui, e, Style::default().self_align(Align::Start), Align::Start);

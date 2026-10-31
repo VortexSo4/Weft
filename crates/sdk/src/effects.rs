@@ -13,7 +13,7 @@
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, Music, Particle, Registry, SoundCategory, TextCondition, World, callback, host, qualify};
+use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, TextCondition, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -97,7 +97,194 @@ impl Drop for ParticleBuilder<'_> {
     }
 }
 
+/// A thing in a dimension's sky, see `Registry::sky_body`, `sky_stars`, `sky_dome`.
+pub struct SkyBuilder<'a> {
+    raw: *mut abi::Registrar,
+    name: String,
+    dimension: String,
+    texture: String,
+    shader: String,
+    desc: abi::SkyDesc,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+impl SkyBuilder<'_> {
+    /// Picture, relative names are under `textures/sky/`. A dome tells its layout by its shape:
+    /// twice as wide as high is a panorama, three by two is the six faces of a box.
+    pub fn texture(mut self, name: &str) -> Self {
+        self.texture = crate::asset("sky", name);
+        self
+    }
+    /// Colors it with `shaders/sky/<name>.wgsl` instead of the plain picture.
+    pub fn shader(mut self, name: &str) -> Self {
+        self.shader = crate::asset("", name);
+        self
+    }
+    /// Ticks per turn around the sky, negative the other way. Without it, it follows the
+    /// dimension's day like the sun does.
+    pub fn orbit(mut self, ticks: f32) -> Self {
+        self.desc.orbit = ticks;
+        self
+    }
+    /// Stays where its phase, tilt and heading put it.
+    pub fn still(self) -> Self {
+        self.orbit(0.0)
+    }
+    /// Back to following the dimension's day, for changing another mod's object.
+    pub fn follow_day(self) -> Self {
+        self.orbit(f32::INFINITY)
+    }
+    /// Where on its orbit it starts, in turns: 0 rising in the east, 0.25 overhead, 0.5 setting.
+    /// A moon opposite the sun is 0.5.
+    pub fn phase(mut self, turns: f32) -> Self {
+        self.desc.phase = turns;
+        self
+    }
+    /// Degrees its orbit leans away from overhead, to the south.
+    pub fn tilt(mut self, degrees: f32) -> Self {
+        self.desc.tilt = degrees;
+        self
+    }
+    /// Degrees its orbit turns around the vertical: 90 rises in the north instead of the east.
+    pub fn heading(mut self, degrees: f32) -> Self {
+        self.desc.heading = degrees;
+        self
+    }
+    /// Degrees across the sky (vanilla's sun 33, moon 23); of each star, for stars.
+    pub fn size(mut self, degrees: f32) -> Self {
+        self.desc.size = degrees;
+        self
+    }
+    /// Ticks per turn around its own middle.
+    pub fn spin(mut self, ticks: f32) -> Self {
+        self.desc.spin = ticks;
+        self
+    }
+    /// How much of it shows by full day and by deep night, 0..1 (stars: 0 and 0.22).
+    pub fn opacity(mut self, day: f32, night: f32) -> Self {
+        self.desc.opacity = [day, night];
+        self
+    }
+    /// 0xRRGGBB multiplied in.
+    pub fn color(mut self, rgb: u32) -> Self {
+        self.desc.color = rgb;
+        self
+    }
+    /// The picture is a grid of frames, shown one after another: a moon's phases.
+    pub fn frames(mut self, columns: u32, rows: u32) -> Self {
+        self.desc.frames = [columns, rows];
+        self
+    }
+    /// Ticks each frame lasts; by default a day of the dimension.
+    pub fn frame_ticks(mut self, ticks: u32) -> Self {
+        self.desc.frame_ticks = ticks;
+        self
+    }
+    /// Lights the horizon while rising and setting, a sunset in this color (0xRRGGBB).
+    pub fn glow(mut self, rgb: u32) -> Self {
+        self.desc.glow = rgb;
+        self
+    }
+    /// Adds its light to what is behind it. Without it, it covers what is behind it, so a moon
+    /// with an opaque picture hides any other that passes behind it.
+    pub fn additive(mut self) -> Self {
+        self.desc.additive = 1;
+        self
+    }
+    /// Covers what is behind it, for an object someone made `additive`.
+    pub fn covers(mut self) -> Self {
+        self.desc.additive = 0;
+        self
+    }
+    /// Drawn low to high, one over the other; registration order among equals. Bodies start at
+    /// 0, stars at -100, domes at -200.
+    pub fn order(mut self, order: i32) -> Self {
+        self.desc.order = order;
+        self
+    }
+    /// The height of clouds' underside (only clouds use it, like `drift`).
+    pub fn height(mut self, y: f32) -> Self {
+        self.desc.height = y;
+        self
+    }
+    /// Blocks per tick clouds drift along x, negative the other way.
+    pub fn drift(mut self, blocks_per_tick: f32) -> Self {
+        self.desc.drift = blocks_per_tick;
+        self
+    }
+    /// How many stars (only stars use it, like `seed`).
+    pub fn count(mut self, n: u32) -> Self {
+        self.desc.count = n;
+        self
+    }
+    /// What scatters the stars: another seed, another sky.
+    pub fn seed(mut self, seed: u32) -> Self {
+        self.desc.seed = seed;
+        self
+    }
+}
+
+impl Drop for SkyBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::SkyDesc { dimension: Str::new(&self.dimension), name: Str::new(&self.name), texture: Str::new(&self.texture), shader: Str::new(&self.shader), ..self.desc };
+        unsafe { (host().reg_sky)(self.raw, &desc) }
+    }
+}
+
 impl Registry {
+    fn sky_object<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject, kind: u32) -> SkyBuilder<'a> {
+        SkyBuilder {
+            raw: self.raw,
+            name: object.name().to_string(),
+            dimension: dimension.name().to_string(),
+            texture: String::new(),
+            shader: String::new(),
+            desc: abi::SkyDesc { kind, ..abi::SkyDesc::DEFAULT },
+            _p: PhantomData,
+        }
+    }
+
+    /// A picture on an orbit, a sun or a moon, independent of everything else in the sky:
+    ///
+    /// ```ignore
+    /// static PLANET: SkyObject = SkyObject::named("planet");
+    /// r.sky_body(&OVERWORLD, &PLANET).texture("planet").size(6.0).orbit(96000.0).phase(0.1).tilt(20.0);
+    /// ```
+    ///
+    /// Naming another mod's object changes only what you set: `r.sky_body(&OVERWORLD, &MOON).size(40.0)`.
+    pub fn sky_body<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject) -> SkyBuilder<'a> {
+        self.sky_object(dimension, object, abi::sky_kind::BODY)
+    }
+
+    /// Points scattered over the sky and turning together, seen at night unless `opacity` says
+    /// otherwise.
+    pub fn sky_stars<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject) -> SkyBuilder<'a> {
+        self.sky_object(dimension, object, abi::sky_kind::STARS)
+    }
+
+    /// The whole sky at once, a skybox picture or a shader, standing still unless given an orbit.
+    /// It starts out still, and over the day's colors; `opacity(0.0, 1.0)` keeps it to the night.
+    pub fn sky_dome<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject) -> SkyBuilder<'a> {
+        self.sky_object(dimension, object, abi::sky_kind::DOME)
+    }
+
+    /// A layer of boxes in the air, 12 blocks each, wherever `texture`'s pixels are filled:
+    /// `r.sky_clouds(&OVERWORLD, &CLOUDS).texture("clouds").height(300.0)`.
+    pub fn sky_clouds<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject) -> SkyBuilder<'a> {
+        self.sky_object(dimension, object, abi::sky_kind::CLOUDS)
+    }
+
+    /// Takes something out of one dimension's sky, your own or another mod's (that mod has to load
+    /// first: depend on it). The base game puts its sun, moon and stars in every dimension of its
+    /// own, each to be taken out separately.
+    pub fn remove_sky(&mut self, dimension: &Dimension, object: &SkyObject) {
+        let mut b = self.sky_object(dimension, object, u32::MAX);
+        b.desc.remove = 1;
+    }
+
     /// A particle kind, see `ParticleBuilder`. Registering `core:block` or `core:poof` changes how
     /// the engine's own block dust and smoke look.
     pub fn particle<'a>(&'a mut self, particle: &'static Particle) -> ParticleBuilder<'a> {

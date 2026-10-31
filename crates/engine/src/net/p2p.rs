@@ -156,7 +156,6 @@ fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
 
 pub struct Hosting {
     pub ticket: Option<String>,
-    pub error: Option<String>,
 }
 
 pub static HOSTING: Mutex<Option<Hosting>> = Mutex::new(None);
@@ -167,14 +166,14 @@ pub fn host(connect: crossbeam_channel::Sender<ServerConn>, settings: &Settings)
     if HOSTING.lock().is_some() {
         return;
     }
-    *HOSTING.lock() = Some(Hosting { ticket: None, error: None });
+    *HOSTING.lock() = Some(Hosting { ticket: None });
     let settings = settings.clone();
     runtime().spawn(async move {
         let ep = match endpoint(&settings, true).await {
             Ok(e) => e,
             Err(e) => {
                 log::error!("{e}");
-                *HOSTING.lock() = Some(Hosting { ticket: None, error: Some(e) });
+                *HOSTING.lock() = Some(Hosting { ticket: None });
                 return;
             }
         };

@@ -339,7 +339,8 @@ pub async fn fall_damage(t: T) -> R {
     t.until("landed", Duration::from_secs(10), |t| t.flag(client::client_flags::ON_GROUND)).await?;
     t.secs(0.5).await?;
     let hp = t.state().health;
-    t.check((10.0..=12.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
+    // 11 on landing, and full and saturated it heals fast (a point in half a second).
+    t.check((10.0..=13.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
     Ok(())
 }
 
@@ -408,7 +409,7 @@ pub async fn movement_attributes(t: T) -> R {
         let mut top = y0;
         t.hold("core:jump", 0.1);
         for _ in 0..30 {
-            t.frames(1).await?;
+            t.secs(0.03).await?;
             top = top.max(t.state().pos[1]);
         }
         t.secs(1.0).await?;
@@ -618,7 +619,7 @@ pub async fn food(t: T) -> R {
     t.c().select(0);
     t.until("hunger synced", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 10.0)).await?;
     t.secs(0.3).await?;
-    t.press("core:use");
+    t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 2).await?;
     t.until("food went up", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 18.0)).await?;
     t.until("healed", Duration::from_secs(3), |t| t.state().health >= before + 2.0).await?;
@@ -756,4 +757,202 @@ pub async fn respawn(t: T) -> R {
     let health: f32 = t.op("health").await?.parse().unwrap_or(20.0);
     t.check(health < 20.0, format!("hunger's pulse still runs: health {health}"));
     Ok(())
+}
+
+/// Modern clicks: every press acts at once however fast it follows the last, and only holding the
+/// button waits between repeats.
+pub async fn presses_never_wait(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 0 stone 64").await?;
+    t.c().select(0);
+    weft_sdk::settings::VSYNC.set(false);
+    let r = presses_fast(&t).await;
+    weft_sdk::settings::VSYNC.set(true);
+    r
+}
+
+async fn presses_fast(t: &T) -> R {
+    let f = t.feet();
+    for x in 2..=3 {
+        t.set(add(f, [x, 0, 0]), "stone").await?;
+    }
+    let count = |t: &T| t.c().inventory_slot(0).count;
+    t.look_at(add(f, [3, 0, 0]));
+    t.frames(3).await?;
+    t.press("core:use");
+    // A key needs a frame up between presses, and this is far less than the 0.2 s of holding.
+    t.secs(0.07).await?;
+    t.press("core:use");
+    t.until("two quick presses place two blocks", Duration::from_secs(2), |t| count(t) <= 62).await?;
+    t.check(count(t) == 62, format!("two presses placed {} blocks", 64 - count(t)));
+    // Held, it repeats about 5 times a second.
+    t.secs(0.5).await?;
+    let before = count(t);
+    t.c().look(45.0, 40.0);
+    t.hold("core:use", 1.0);
+    t.secs(1.2).await?;
+    let held = before - count(t);
+    t.note(format!("held for a second: {held} uses"));
+    t.check(held <= 6, format!("holding waits between repeats: {held} in a second"));
+    Ok(())
+}
+
+/// Placing a block over a plant replaces it and drops what it would when broken, except in
+/// creative.
+pub async fn replaced_plants_drop(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let flower = add(f, [2, 0, 0]);
+    t.op("put me 0 stone 2").await?;
+    t.c().select(0);
+    for creative in [false, true] {
+        if creative {
+            t.op("mode creative").await?;
+        }
+        t.set(flower, "dandelion").await?;
+        t.until("the flower on the client", Duration::from_secs(2), |t| t.c().block(flower).is_some_and(|s| s != 0)).await?;
+        t.look_at(flower);
+        t.frames(2).await?;
+        t.press("core:use");
+        t.until("stone over the flower", Duration::from_secs(2), |t| t.c().block(flower).is_some_and(|s| Block::named("base:stone").is(s))).await?;
+        t.secs(0.2).await?;
+        let near = t.op(&format!("near {} {} {} 2", flower[0], flower[1], flower[2])).await?;
+        if creative {
+            t.check(!near.contains("core:item"), format!("nothing drops in creative: {near}"));
+        } else {
+            let d = t.op("inv me").await?;
+            t.check(near.contains("core:item") || d.contains("dandelion"), format!("the flower dropped: near '{near}', inventory '{d}'"));
+        }
+        t.set(flower, "air").await?;
+        t.secs(0.5).await?;
+        t.cmd("/kill @e[type=core:item]").await?;
+    }
+    Ok(())
+}
+
+/// Sprinting under water swims in a low box at about 3.9 blocks a second, where wading does 2;
+/// lava is not swimmable, unless the attribute says so.
+pub async fn swimming(t: T) -> R {
+    t.flat().await?;
+    t.op("mode creative").await?;
+    let f = t.feet();
+    let (a, b) = (add(f, [-8, 0, -40]), add(f, [8, 12, 8]));
+    let pool = |name: &'static str| {
+        let t = t.clone();
+        async move { t.fill(a, b, name).await }
+    };
+    let sprint_speed = |t: T, pitch: f32| async move {
+        let s = t.state().pos;
+        t.c().teleport([s[0], f[1] as f64 + 8.0, f[2] as f64 + 0.5]);
+        t.secs(0.3).await?;
+        t.c().look(0.0, pitch);
+        t.hold("core:sprint", 2.0);
+        t.hold("core:forward", 2.0);
+        t.secs(1.0).await?;
+        let from = t.state().pos;
+        t.secs(0.8).await?;
+        let to = t.state().pos;
+        t.secs(1.0).await?;
+        Ok::<(f64, f64), String>((((to[0] - from[0]).powi(2) + (to[2] - from[2]).powi(2)).sqrt() / 0.8, to[1] - from[1]))
+    };
+    pool("water").await?;
+    t.secs(0.5).await?;
+    let (swim, _) = sprint_speed(t.clone(), 0.0).await?;
+    t.note(format!("sprinting under water: {swim:.2} blocks/s"));
+    t.check((3.3..4.6).contains(&swim), format!("swimming speed {swim:.2}, vanilla's code gives 3.9"));
+    let (_, down) = sprint_speed(t.clone(), -60.0).await?;
+    t.note(format!("looking down, moved {down:.2} in y"));
+    t.check(down < -0.3, format!("swimming goes where it looks: y {down:.2}"));
+    pool("lava").await?;
+    t.secs(0.5).await?;
+    let (wade, _) = sprint_speed(t.clone(), 0.0).await?;
+    t.note(format!("sprinting in lava: {wade:.2} blocks/s"));
+    t.check(wade < 1.8, format!("no swimming in lava: {wade:.2} blocks/s"));
+    t.op("attr_mod me core:swim_anywhere testkit:swims 0 1 0").await?;
+    t.secs(0.2).await?;
+    let (suit, _) = sprint_speed(t.clone(), 0.0).await?;
+    t.note(format!("with the attribute: {suit:.2} blocks/s"));
+    t.check(suit > wade * 1.3, format!("the attribute swims in lava: {wade:.2} -> {suit:.2}"));
+    t.op("attr_rm me core:swim_anywhere testkit:swims").await?;
+    pool("air").await?;
+    Ok(())
+}
+
+/// Modern combat: a hit right after the last does a fraction, a charged one all of it, and a
+/// stronger hit during the target's recovery still adds the difference.
+pub async fn attack_charge(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 0 iron_sword 1").await?;
+    t.c().select(0);
+    let f = t.feet();
+    let spot = add(f, [0, 0, -2]);
+    // Walled in with the player, or it would run off from the first hit.
+    for (from, to) in [([-1, 0, -3], [-1, 2, 1]), ([1, 0, -3], [1, 2, 1]), ([0, 0, -3], [0, 2, -3]), ([0, 0, 1], [0, 2, 1])] {
+        t.fill(add(f, from), add(f, to), "stone").await?;
+    }
+    let id = t.op(&format!("spawn base:cow {} {} {}", spot[0], spot[1], spot[2])).await?;
+    let health = |t: T, id: String| async move {
+        let s = t.op(&format!("entity {id}")).await?;
+        Ok::<f32, String>(s.split_whitespace().last().and_then(|v| v.parse().ok()).unwrap_or(-1.0))
+    };
+    t.look_at(spot);
+    // The sword just came to hand: nearly no charge, and the hand comes up over the next second.
+    t.secs(0.2).await?;
+    t.c().select(1);
+    t.c().select(0);
+    t.frames(2).await?;
+    let before = health(t.clone(), id.clone()).await?;
+    t.press("core:attack");
+    t.secs(0.15).await?;
+    let weak = before - health(t.clone(), id.clone()).await?;
+    t.note(format!("uncharged: {weak:.2}"));
+    t.check((0.1..2.5).contains(&weak), format!("a hit with no charge does little: {weak:.2} of 6"));
+    t.secs(1.5).await?;
+    let before = health(t.clone(), id.clone()).await?;
+    t.press("core:attack");
+    t.secs(0.15).await?;
+    let full = before - health(t.clone(), id.clone()).await?;
+    t.note(format!("charged: {full:.2}"));
+    t.check((5.5..6.5).contains(&full), format!("a charged iron sword does 6: {full:.2}"));
+    Ok(())
+}
+
+/// One level for everything: below what a command asks for it refuses and isn't offered, and a
+/// player can't give out more than it has.
+pub async fn permissions(t: T) -> R {
+    t.flat().await?;
+    t.check(t.cmd("/time query").await?.contains("time is"), "the host may do it all");
+    t.op("put me 0 stone 1").await?;
+    t.c().select(0);
+    t.secs(0.1).await?;
+    t.cmd("/op @s 0").await?;
+    let no = t.cmd("/time set 1000").await?;
+    t.check(no.contains("permission level 2"), format!("/time at level 0: {no}"));
+    t.cmd("/rename shiny").await?;
+    t.until("a command for everyone still works", Duration::from_secs(2), |t| t.c().inventory_slot(0).data != 0).await?;
+    let up = t.cmd("/op @s 4").await?;
+    t.check(up.contains("permission level 3"), format!("/op from level 0: {up}"));
+    Ok(())
+}
+
+/// A sword doesn't break blocks in creative, as in modern; other things do.
+pub async fn creative_sword(t: T) -> R {
+    t.flat().await?;
+    t.op("mode creative").await?;
+    t.op("put me 0 iron_sword 1").await?;
+    t.op("put me 1 iron_pickaxe 1").await?;
+    t.c().select(0);
+    let b = add(t.feet(), [2, 0, 0]);
+    t.set(b, "stone").await?;
+    t.until("the block on the client", Duration::from_secs(2), |t| t.c().block(b).is_some_and(|s| s != 0)).await?;
+    t.look_at(b);
+    t.frames(3).await?;
+    t.press("core:attack");
+    t.secs(0.4).await?;
+    t.check_eq(t.block(b).await?, "base:stone".into(), "a sword leaves it");
+    t.check(t.c().block(b).is_some_and(|s| s != 0), "and the client still shows it");
+    t.c().select(1);
+    t.secs(0.1).await?;
+    t.press("core:attack");
+    t.until("a pickaxe breaks it", Duration::from_secs(2), |t| t.c().block(b) == Some(0)).await
 }

@@ -122,6 +122,9 @@ fn worldgen(_r: &mut Registry) {
     // static SHRINE: Template = Template::named("shrine");
     // r.template(&SHRINE).layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone");
     // r.structure(&OVERWORLD, &SHRINE).spacing(256).chance(0.3);
+    // Something new in the sky, on an orbit of its own (textures/sky/planet.png):
+    // static PLANET: SkyObject = SkyObject::named("planet");
+    // r.sky_body(&OVERWORLD, &PLANET).texture("planet").size(6.0).orbit(96000.0).phase(0.1).tilt(20.0);
 }
 
 /// Mobs and other entities

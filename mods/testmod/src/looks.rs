@@ -83,7 +83,7 @@ pub fn register(r: &mut Registry) {
         .hardness(1.5)
         .mineable("pickaxe")
         // Sparks now and then, shown by the client near the player.
-        .ambient_particle(SPARK.name());
+        .ambient_particles(&["spark", "core:smoke"]);
 
     // Its own category (no spawning rule: wisps come only from commands and creative): they
     // drift off again when nobody is within 64 blocks.

@@ -98,9 +98,6 @@ impl Style {
     pub fn row() -> Style {
         Style { row: true, align: Align::Center, ..Default::default() }
     }
-    pub fn col() -> Style {
-        Style::default()
-    }
     pub fn pad(mut self, p: f32) -> Self {
         self.pad = [p; 4];
         self
@@ -124,24 +121,12 @@ impl Style {
     pub fn size(self, w: f32, h: f32) -> Self {
         self.w(w).h(h)
     }
-    pub fn w_pct(mut self, p: f32) -> Self {
-        self.w = Len::Pct(p);
-        self
-    }
-    pub fn h_pct(mut self, p: f32) -> Self {
-        self.h = Len::Pct(p);
-        self
-    }
     pub fn min_w(mut self, w: f32) -> Self {
         self.min[0] = w;
         self
     }
     pub fn min_h(mut self, h: f32) -> Self {
         self.min[1] = h;
-        self
-    }
-    pub fn max_w(mut self, w: f32) -> Self {
-        self.max_w = w;
         self
     }
     pub fn grow(mut self) -> Self {
@@ -221,7 +206,8 @@ pub enum Kind {
     /// `dir`: `abi::ui_dir` the bar fills towards.
     Progress { class: String, bind: FloatBind, value: f32, dir: u32 },
     /// `count` icons showing `value` in half steps (hearts): textures `gui/<class>_full`, `_half`, `_empty`.
-    Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool },
+    /// `shake`: at 4 or less they jump about, like hearts near the end.
+    Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool, shake: bool },
     /// Single-line text field; `caret` is a char index.
     Input { value: String, caret: usize, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
     Slider { value: f32, bind: FloatBind, on_change: Rc<dyn Fn(&mut Ctx, f32)> },

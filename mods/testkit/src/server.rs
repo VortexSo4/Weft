@@ -109,72 +109,15 @@ pub fn register(r: &mut Registry) {
         }
         driven.retain(|d| d.2 > 0);
     });
+    r.intercept(&question::BREAK_BLOCK, |q| if *PROTECTED.lock().unwrap() == Some(q.pos()) { Verdict::Deny } else { Verdict::Abstain });
     register_ops(r);
 }
-
-/// The operations tests run on the server, as one command (`/tk set ~ ~ ~2 stone`): the engine
-/// parses positions (`~dx`), block, item and entity names, and the answer goes back to the test
-/// that ran it (`Client::run_command`), as `ok ..` or `err ..`.
-const OPS: &[(&str, &str)] = &[
-    ("set", "<pos:pos> <block:block>"),
-    ("fill", "<from:pos> <to:pos> <block:block>"),
-    ("get", "<pos:pos>"),
-    ("crater", "<r:int>"),
-    ("crater_fast", "<r:int>"),
-    ("group", "@owner <name:word>"),
-    ("pings", ""),
-    ("setprop", "<pos:pos> <prop:word> <value:word>"),
-    ("sblock", "<id:int> <pos:pos> [block:block]"),
-    ("light", "<pos:pos>"),
-    ("slot", "@owner <index:int>"),
-    ("put", "@owner <index:int> <item:item> [count:int]"),
-    ("give", "<item:item> [count:int]"),
-    ("insert", "<pos:pos> <item:item> [count:int]"),
-    ("inv", "@owner"),
-    ("spawn", "<kind:entity> <pos:pos>"),
-    ("entity", "@entity"),
-    ("size", "@entity"),
-    ("near", "<pos:pos> <r:float>"),
-    ("animate", "@owner [name:word]"),
-    ("survey", "<r:int>"),
-    ("drops", "<n:int>"),
-    ("find", "<r:int> <block:block>"),
-    ("census", "<r:int> <blocks:word>"),
-    ("cube_top_plants", "<r:int>"),
-    ("play", "<sound:word>"),
-    ("onto", "<id:int> <h:float> [rider:int]"),
-    ("navigate", "@owner <to:pos>"),
-    ("structure", "<name:word> <r:int>"),
-    ("after", "<ticks:int>"),
-    ("rings", ""),
-    ("look", ""),
-    ("place", "<template:word> <pos:pos>"),
-    ("heal", ""),
-    ("push", "<x:float> <y:float> <z:float> [id:int]"),
-    ("drive", "<id:int> <dx:float> <dz:float> <ticks:int>"),
-    ("health", "[id:int]"),
-    ("time", "<ticks:int>"),
-    ("mode", "survival | creative | spectator"),
-    ("menu", "<which:word> <pos:pos>"),
-    ("vmenu", "<which:word> <slots:int> [items:text]"),
-    ("remove", "<id:int>"),
-    ("mark", "<id:int> <value:int>"),
-    ("secret", "@owner <index:int> [value:int]"),
-    ("events", " | reset"),
-    ("attr", "@owner <attribute:word>"),
-    ("attr_mod", "@owner <attribute:word> <mod:word> <op:int> <amount:float> <ticks:int>"),
-    ("attr_rm", "@owner <attribute:word> <mod:word>"),
-    ("loot", "<table:word> <n:int> [ctx:text]"),
-    ("break", "<pos:pos> [tool:item]"),
-    ("damage", "<amount:float> [cause:int]"),
-    ("snapshot", "<from:pos> <to:pos>"),
-];
 
 /// The usage of `/tk`: every operation, an owner (`@owner`) written as `me`, an entity id or a
 /// block entity's position, an entity (`@entity`) as `me` or an id.
 fn usage() -> String {
     let mut alts = Vec::new();
-    for (op, args) in OPS {
+    for (op, args, _) in OPS {
         for args in args.split(" | ") {
             let forms: &[&str] = if args.contains("@owner") {
                 &["me", "<id:int>", "<at:pos>"]
@@ -247,383 +190,410 @@ fn stack_text(s: ItemStack) -> String {
 
 fn run(w: &World, cmd: &Command) -> Result<String, String> {
     let player = cmd.player();
-    let me = w.entity(player).map(|e| [e.pos[0].floor() as i32, e.pos[1].floor() as i32, e.pos[2].floor() as i32]).unwrap_or_default();
+    let me = w.entity(player).map(|e| e.block_pos()).unwrap_or_default();
     // The operation is the literal that came first; a parameter may share its name (`slot`).
-    let op = OPS.iter().map(|o| o.0).find(|o| cmd.text(o) == Some(*o)).ok_or("no operation")?;
-    match op {
-        "set" => {
-            let p = pos(cmd, "pos")?;
-            if !w.set(p, id(cmd, "block")?) {
-                return Err(format!("{p:?} is not loaded"));
-            }
-            Ok(String::new())
+    let op = OPS.iter().find(|o| cmd.text(o.0) == Some(o.0)).ok_or("no operation")?;
+    (op.2)(w, cmd, player, me)
+}
+
+/// `(name, usage, what it does)`, the running player and where it stands given.
+type Run = fn(&World, &Command, u64, [i32; 3]) -> Result<String, String>;
+
+/// A block `question::BREAK_BLOCK` says no about.
+static PROTECTED: std::sync::Mutex<Option<[i32; 3]>> = std::sync::Mutex::new(None);
+
+/// The operations tests run on the server, as one command (`/tk set ~ ~ ~2 stone`): the engine
+/// parses positions (`~dx`), block, item and entity names, and the answer goes back to the test
+/// that ran it (`Client::run_command`), as `ok ..` or `err ..`.
+const OPS: &[(&str, &str, Run)] = &[
+    ("set", "<pos:pos> <block:block>", |w, cmd, _, _| {
+        let p = pos(cmd, "pos")?;
+        if !w.set(p, id(cmd, "block")?) {
+            return Err(format!("{p:?} is not loaded"));
         }
-        "fill" => {
-            let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
-            let s = id(cmd, "block")?;
-            let (lo, hi) = ([p[0].min(q[0]), p[1].min(q[1]), p[2].min(q[2])], [p[0].max(q[0]), p[1].max(q[1]), p[2].max(q[2])]);
-            let volume = (0..3).map(|i| (hi[i] - lo[i] + 1) as i64).product::<i64>();
-            if volume > 1 << 18 {
-                return Err(format!("fill of {volume} blocks is too big"));
-            }
-            let mut missed = 0;
-            for y in lo[1]..=hi[1] {
-                for z in lo[2]..=hi[2] {
-                    for x in lo[0]..=hi[0] {
-                        missed += !w.set([x, y, z], s) as u32;
-                    }
+        Ok(String::new())
+    }),
+    ("fill", "<from:pos> <to:pos> <block:block>", |w, cmd, _, _| {
+        let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
+        let s = id(cmd, "block")?;
+        let (lo, hi) = ([p[0].min(q[0]), p[1].min(q[1]), p[2].min(q[2])], [p[0].max(q[0]), p[1].max(q[1]), p[2].max(q[2])]);
+        let volume = (0..3).map(|i| (hi[i] - lo[i] + 1) as i64).product::<i64>();
+        if volume > 1 << 18 {
+            return Err(format!("fill of {volume} blocks is too big"));
+        }
+        let mut missed = 0;
+        for y in lo[1]..=hi[1] {
+            for z in lo[2]..=hi[2] {
+                for x in lo[0]..=hi[0] {
+                    missed += !w.set([x, y, z], s) as u32;
                 }
             }
-            if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
-        "get" => Ok(block_name(w.get(pos(cmd, "pos")?)).to_string()),
-        "crater_fast" => {
-            // The same through the area edit: one call, done at the end of the tick.
-            let r: i32 = int(cmd, "r")?;
-            w.fill_sphere([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64, 0, true);
-            Ok(String::new())
-        }
-        "crater" => {
-            // Every loaded block within `r` of the player turned to air, one `w.set` each, the
-            // way a mod would do it today: changed, already air, not loaded, milliseconds.
-            let r: i32 = int(cmd, "r")?;
-            let start = std::time::Instant::now();
-            let (mut changed, mut air, mut missed) = (0u64, 0u64, 0u64);
-            for y in -r..=r {
-                for z in -r..=r {
-                    for x in -r..=r {
-                        if x * x + y * y + z * z > r * r {
-                            continue;
-                        }
-                        let p = [me[0] + x, me[1] + y, me[2] + z];
-                        let s = w.get(p);
-                        if s == 0 {
-                            air += 1;
-                        } else if w.set(p, 0) {
-                            changed += 1;
-                        } else {
-                            missed += 1;
-                        }
-                    }
-                }
-            }
-            Ok(format!("{changed} {air} {missed} {:.1}", start.elapsed().as_secs_f64() * 1000.0))
-        }
-        "group" => {
-            let g = w.inventory(owner(w, cmd)?).group(word(cmd, "name")?);
-            Ok(format!("{} {}", g.len(), (0..g.len()).filter(|&i| !g.get(i).is_empty()).count()))
-        }
-        "pings" => Ok(PINGS.load(Ordering::Relaxed).to_string()),
-        "setprop" => Ok((w.set_prop(pos(cmd, "pos")?, word(cmd, "prop")?, word(cmd, "value")?) as u32).to_string()),
-        "sblock" => {
-            // A block of a moving structure, or set it.
-            let (id_, p) = (int::<u64>(cmd, "id")?, pos(cmd, "pos")?);
-            match cmd.id("block") {
-                Some(b) => Ok((w.set_structure_block(id_, p, b) as u32).to_string()),
-                None => w.structure_block(id_, p).map(|s| block_name(s).to_string()).ok_or_else(|| "not a structure".to_string()),
-            }
-        }
-        "light" => Ok(w.light(pos(cmd, "pos")?).to_string()),
-        "slot" => Ok(stack_text(w.inventory(owner(w, cmd)?).get(int(cmd, "index")?))),
-        "put" => {
-            let o = owner(w, cmd)?;
-            w.inventory(o).set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
-            Ok(String::new())
-        }
-        "give" => {
-            let count: u32 = int(cmd, "count").unwrap_or(1);
-            let left = w.inventory(player).insert(ItemStack::new(id(cmd, "item")?, count));
-            Ok((count - left.count).to_string())
-        }
-        "insert" => {
-            let p = pos(cmd, "pos")?;
-            let o = match w.block_entity(p) {
-                0 => return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p)))),
-                id => id,
-            };
-            let count: u32 = int(cmd, "count").unwrap_or(1);
-            let left = w.inventory(o).insert(ItemStack::new(id(cmd, "item")?, count));
-            Ok((count - left.count).to_string())
-        }
-        "inv" => {
-            let inv = w.inventory(owner(w, cmd)?);
-            let parts: Vec<String> = (0..inv.size()).map(|i| (i, inv.get(i))).filter(|(_, s)| !s.is_empty()).map(|(i, s)| format!("{i}:{}:{}", item_name(s.item), s.count)).collect();
-            Ok(parts.join(" "))
-        }
-        "spawn" => {
-            let p = pos(cmd, "pos")?;
-            Ok(w.spawn_kind(id(cmd, "kind")?, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5]).to_string())
-        }
-        "entity" => {
-            let e = w.entity(owner(w, cmd)?).ok_or("no such entity")?;
-            Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
-        }
-        "size" => {
-            let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
-            Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
-        }
-        "near" => {
-            let p = pos(cmd, "pos")?;
-            let r = cmd.float("r").ok_or("missing r")?;
-            let ids = w.near([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], r, None);
-            let parts: Vec<String> = ids.iter().filter(|&&id| id != player).filter_map(|&id| w.entity(id).map(|e| format!("{id}:{}", name_of(ek::ENTITY, e.kind)))).collect();
-            Ok(parts.join(" "))
-        }
-        "animate" => {
-            w.play_animation(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
-            Ok(String::new())
-        }
-        "survey" => {
-            // Biomes of every block within `r` of the player, and where glow crystals are.
-            let r: i32 = int(cmd, "r")?;
-            let crystal = Block::lookup("testmod:glow_crystal").ok_or("no crystal block")?;
-            let cave = Tag::named("cave");
-            let mut biomes: std::collections::BTreeMap<&str, u32> = Default::default();
-            let (mut in_cave, mut elsewhere) = (0, 0);
-            for y in me[1] - r..=me[1] + r {
-                for z in me[2] - r..=me[2] + r {
-                    for x in me[0] - r..=me[0] + r {
-                        let b = w.biome([x, y, z]);
-                        *biomes.entry(name_of(ek::BIOME, b)).or_default() += 1;
-                        if block_of(w.get([x, y, z])) == block_of(crystal) {
-                            if cave.on_biome(b) { in_cave += 1 } else { elsewhere += 1 }
-                        }
-                    }
-                }
-            }
-            let list: Vec<String> = biomes.iter().map(|(n, k)| format!("{n}={k}")).collect();
-            Ok(format!("{} | crystals {in_cave} {elsewhere}", list.join(" ")))
-        }
-        "drops" => {
-            // `n` dropped stacks of a few kinds (blocks and sprites) in a grid north of the
-            // player, 1.1 apart so they do not merge.
-            let n: u32 = int(cmd, "n")?;
-            let kinds: Vec<u32> = ["base:dirt", "base:coal", "base:iron_pickaxe", "base:dandelion", "base:stick", "base:torch"].iter().filter_map(|k| Item::lookup(k)).collect();
-            let side = (n as f64).sqrt().ceil() as u32;
-            for i in 0..n {
-                let (x, z) = ((i % side) as f64 * 1.1 - side as f64 * 0.55, -3.0 - (i / side) as f64 * 1.1);
-                w.spawn_item([me[0] as f64 + x, me[1] as f64 + 0.5, me[2] as f64 + z], ItemStack::new(kinds[i as usize % kinds.len()], 1));
-            }
-            Ok(format!("{n} drops"))
-        }
-        "find" => {
-            // The first block of that kind within `r` of the player.
-            let r: i32 = int(cmd, "r")?;
-            let want = block_of(id(cmd, "block")?);
-            for y in me[1] - r..=me[1] + r {
-                for z in me[2] - r..=me[2] + r {
-                    for x in me[0] - r..=me[0] + r {
-                        if block_of(w.get([x, y, z])) == want {
-                            return Ok(format!("{x} {y} {z}"));
-                        }
-                    }
-                }
-            }
-            Err("not found".into())
-        }
-        "census" => {
-            // How many of each block (`a,b`) lie within `r` of the player.
-            let r: i32 = int(cmd, "r")?;
-            let names: Vec<&str> = word(cmd, "blocks")?.split(',').collect();
-            let ids: Vec<u32> = names.iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
-            let mut counts = vec![0u32; ids.len()];
-            for y in me[1] - r..=me[1] + r {
-                for z in me[2] - r..=me[2] + r {
-                    for x in me[0] - r..=me[0] + r {
-                        let b = block_of(w.get([x, y, z]));
-                        if let Some(i) = ids.iter().position(|&id| id == b) {
-                            counts[i] += 1;
-                        }
-                    }
-                }
-            }
-            Ok(names.iter().zip(&counts).map(|(n, k)| format!("{n}={k}")).collect::<Vec<_>>().join(" "))
-        }
-        "play" => {
-            // A sound event at the player, by name.
-            static BOOM: Sound = Sound::named("testmod:boom");
-            let _ = word(cmd, "sound")?;
-            w.play_sound(&BOOM, [me[0] as f64, me[1] as f64, me[2] as f64], 1.0);
-            Ok(String::new())
-        }
-        "cube_top_plants" => {
-            // Land columns within `r` of the player, split by whether the ground is the top layer
-            // of its cube, and how many of each carry a plant: `tops plants others plants`.
-            let r: i32 = int(cmd, "r")?;
-            let plants: Vec<u32> = ["base:tall_grass", "base:dandelion", "base:rose"].iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
-            let mut n = [0u32; 4];
-            for z in me[2] - r..=me[2] + r {
-                for x in me[0] - r..=me[0] + r {
-                    let h = base_api::OVERWORLD.column(5, x, z).height;
-                    if h < 63 {
+        if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
+    }),
+    ("get", "<pos:pos>", |w, cmd, _, _| Ok(block_name(w.get(pos(cmd, "pos")?)).to_string())),
+    ("crater", "<r:int>", |w, cmd, _, me| {
+        // Every loaded block within `r` of the player turned to air, one `w.set` each, the
+        // way a mod would do it today: changed, already air, not loaded, milliseconds.
+        let r: i32 = int(cmd, "r")?;
+        let start = std::time::Instant::now();
+        let (mut changed, mut air, mut missed) = (0u64, 0u64, 0u64);
+        for y in -r..=r {
+            for z in -r..=r {
+                for x in -r..=r {
+                    if x * x + y * y + z * z > r * r {
                         continue;
                     }
-                    let k = if (h + 1) & 15 == 0 { 0 } else { 2 };
-                    n[k] += 1;
-                    n[k + 1] += plants.contains(&block_of(w.get([x, h + 1, z]))) as u32;
-                }
-            }
-            Ok(format!("{} {} {} {}", n[0], n[1], n[2], n[3]))
-        }
-        "onto" => {
-            // The player (or the rider) on top of an entity `h` high, in the same tick (moving
-            // platforms move on while a teleport by command makes its way).
-            let e = w.entity(int(cmd, "id")?).ok_or("no such entity")?;
-            let rider = cmd.int("rider").map_or(player, |r| r as u64);
-            w.teleport(rider, None, [e.pos[0], e.pos[1] + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos[2]]);
-            Ok(String::new())
-        }
-        "navigate" => {
-            let p = pos(cmd, "to")?;
-            Ok((w.navigate(owner(w, cmd)?, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], 1.0) as u32).to_string())
-        }
-        "structure" => Ok(w.structure_near(word(cmd, "name")?, me, int(cmd, "r")?).map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2]))),
-        // A timer on the player: `after 60`, then `rings` counts the ones that fired.
-        "after" => {
-            w.after(player, int(cmd, "ticks")?, &RANG, player);
-            Ok(String::new())
-        }
-        "rings" => Ok(RINGS.load(Ordering::Relaxed).to_string()),
-        "place" => Ok((w.place(&Template::generated(word(cmd, "template")?.to_string()), pos(cmd, "pos")?) as u32).to_string()),
-        "look" => Ok(w.look_at(player, 5.0, false).map_or("none".into(), |l| format!("{} {} {} {} {}", l.frame, l.pos[0], l.pos[1], l.pos[2], block_name(l.state)))),
-        "drive" => {
-            let dir = [cmd.float("dx").unwrap_or(0.0) as f32, cmd.float("dz").unwrap_or(0.0) as f32];
-            DRIVEN.lock().unwrap().push((int(cmd, "id")?, dir, int(cmd, "ticks")?));
-            Ok(String::new())
-        }
-        "push" => {
-            let v = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
-            w.push(cmd.int("id").map_or(player, |i| i as u64), v);
-            Ok(String::new())
-        }
-        "heal" => {
-            let mut st = w.entity(player).ok_or("no player")?;
-            st.health = st.max_health;
-            w.set_entity(player, &st);
-            Ok(String::new())
-        }
-        "health" => {
-            let id = cmd.int("id").map_or(player, |i| i as u64);
-            Ok(w.entity(id).map_or("none".into(), |e| format!("{}", e.health)))
-        }
-        "time" => {
-            w.set_time(int(cmd, "ticks")?);
-            Ok(String::new())
-        }
-        "mode" => {
-            let m = ["survival", "creative", "spectator"].iter().position(|m| cmd.has(m)).ok_or("no game mode")?;
-            w.set_game_mode(player, m as u32);
-            Ok(String::new())
-        }
-        "menu" => {
-            let name = word(cmd, "which")?;
-            let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
-            let p = pos(cmd, "pos")?;
-            if !w.open_menu_kind_at(player, m, p) {
-                return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p))));
-            }
-            Ok(String::new())
-        }
-        "vmenu" => {
-            let name = word(cmd, "which")?;
-            let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
-            let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
-            let id = w.virtual_inventory(int(cmd, "slots")?, pos);
-            let inv = w.inventory(id);
-            // Pairs of item and count.
-            let words: Vec<&str> = cmd.text("items").unwrap_or("").split_whitespace().collect();
-            for (i, pair) in words.chunks(2).enumerate() {
-                if let [n, c] = pair {
-                    inv.set(i as u32, ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?));
-                }
-            }
-            w.open_menu_kind(player, m, id);
-            Ok(id.to_string())
-        }
-        "remove" => {
-            w.remove(int(cmd, "id")?);
-            Ok(String::new())
-        }
-        "mark" => {
-            *w.component_mut(int(cmd, "id")?, &MARK).ok_or("no mark component")? = int(cmd, "value")?;
-            Ok(String::new())
-        }
-        "secret" => {
-            let inv = w.inventory(owner(w, cmd)?);
-            let slot: u32 = int(cmd, "index")?;
-            let s = inv.get(slot);
-            match cmd.int("value") {
-                Some(v) => {
-                    inv.set(slot, s.with(&SECRET, v as u32));
-                    Ok(String::new())
-                }
-                None => Ok(SECRET.stack_only(&s).map_or("none".into(), |v| v.to_string())),
-            }
-        }
-        "events" => {
-            if cmd.has("reset") {
-                COUNTS.iter().for_each(|c| c.store(0, Ordering::Relaxed));
-            }
-            Ok(EVENT_NAMES.iter().zip(&COUNTS).map(|(n, c)| format!("{n}={}", c.load(Ordering::Relaxed))).collect::<Vec<_>>().join(" "))
-        }
-        "attr" => {
-            let (v, text) = w.explain_attribute(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()));
-            Ok(format!("{v} | {text}"))
-        }
-        "attr_mod" => {
-            let o = owner(w, cmd)?;
-            let amount = cmd.float("amount").ok_or("missing amount")?;
-            w.add_modifier(o, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?, int(cmd, "op")?, amount, int(cmd, "ticks")?);
-            Ok(String::new())
-        }
-        "attr_rm" => {
-            w.remove_modifier(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?);
-            Ok(String::new())
-        }
-        "loot" => {
-            let table = LootTable::generated(word(cmd, "table")?.to_string());
-            let n: u32 = int(cmd, "n")?;
-            let mut ctx = LootCtx::default();
-            for word in cmd.text("ctx").unwrap_or("").split_whitespace() {
-                match word {
-                    "fire" => ctx.on_fire = true,
-                    "player" => ctx.by_player = true,
-                    // Mined by the tool, from the block the table is named after.
-                    "mined" => ctx.mined = Block::lookup(table.name()).ok_or("not a block's table")?,
-                    tool => ctx.tool = ItemStack::new(item(tool)?, 1),
-                }
-            }
-            let mut totals: std::collections::BTreeMap<String, u32> = Default::default();
-            for _ in 0..n {
-                for s in w.roll_loot(table, &ctx) {
-                    *totals.entry(item_name(s.item).to_string()).or_default() += s.count;
-                }
-            }
-            Ok(totals.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "))
-        }
-        "break" => {
-            let tool = cmd.id("tool").map_or(ItemStack::EMPTY, |t| ItemStack::new(t, 1));
-            Ok((w.break_block(pos(cmd, "pos")?, tool, player, true) as u32).to_string())
-        }
-        "damage" => {
-            let amount = cmd.float("amount").ok_or("missing amount")?;
-            let cause: u32 = int(cmd, "cause").unwrap_or(abi::damage::GENERIC);
-            let q = abi::Query { entity: player, cause, amount, ..query() };
-            let (v, text) = w.explain(&chain::DAMAGE, amount, &q);
-            Ok(format!("{v} | {text}"))
-        }
-        "snapshot" => {
-            let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
-            let mut out = Vec::new();
-            for y in p[1].min(q[1])..=p[1].max(q[1]) {
-                for z in p[2].min(q[2])..=p[2].max(q[2]) {
-                    for x in p[0].min(q[0])..=p[0].max(q[0]) {
-                        out.push(w.get([x, y, z]).to_string());
+                    let p = [me[0] + x, me[1] + y, me[2] + z];
+                    let s = w.get(p);
+                    if s == 0 {
+                        air += 1;
+                    } else if w.set(p, 0) {
+                        changed += 1;
+                    } else {
+                        missed += 1;
                     }
                 }
             }
-            Ok(out.join(" "))
         }
-        other => Err(format!("unknown op {other}")),
-    }
-}
+        Ok(format!("{changed} {air} {missed} {:.1}", start.elapsed().as_secs_f64() * 1000.0))
+    }),
+    ("crater_fast", "<r:int>", |w, cmd, _, me| {
+        // The same through the area edit: one call, done at the end of the tick.
+        let r: i32 = int(cmd, "r")?;
+        w.fill_sphere([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64, 0, true);
+        Ok(String::new())
+    }),
+    ("group", "@owner <name:word>", |w, cmd, _, _| {
+        let g = w.inventory(owner(w, cmd)?).group(word(cmd, "name")?);
+        Ok(format!("{} {}", g.len(), (0..g.len()).filter(|&i| !g.get(i).is_empty()).count()))
+    }),
+    ("pings", "", |_, _, _, _| Ok(PINGS.load(Ordering::Relaxed).to_string())),
+    ("setprop", "<pos:pos> <prop:word> <value:word>", |w, cmd, _, _| Ok((w.set_prop(pos(cmd, "pos")?, word(cmd, "prop")?, word(cmd, "value")?) as u32).to_string())),
+    ("sblock", "<id:int> <pos:pos> [block:block]", |w, cmd, _, _| {
+        // A block of a moving structure, or set it.
+        let (id_, p) = (int::<u64>(cmd, "id")?, pos(cmd, "pos")?);
+        match cmd.id("block") {
+            Some(b) => Ok((w.set_structure_block(id_, p, b) as u32).to_string()),
+            None => w.structure_block(id_, p).map(|s| block_name(s).to_string()).ok_or_else(|| "not a structure".to_string()),
+        }
+    }),
+    ("light", "<pos:pos>", |w, cmd, _, _| Ok(w.light(pos(cmd, "pos")?).to_string())),
+    ("skip", "<ticks:int>", |w, cmd, _, _| {
+        w.skip_ticks(int(cmd, "ticks")?);
+        Ok(String::new())
+    }),
+    ("slot", "@owner <index:int>", |w, cmd, _, _| Ok(stack_text(w.inventory(owner(w, cmd)?).get(int(cmd, "index")?)))),
+    ("put", "@owner <index:int> <item:item> [count:int]", |w, cmd, _, _| {
+        let o = owner(w, cmd)?;
+        w.inventory(o).set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
+        Ok(String::new())
+    }),
+    ("give", "<item:item> [count:int]", |w, cmd, player, _| {
+        let count: u32 = int(cmd, "count").unwrap_or(1);
+        let left = w.inventory(player).insert(ItemStack::new(id(cmd, "item")?, count));
+        Ok((count - left.count).to_string())
+    }),
+    ("insert", "<pos:pos> <item:item> [count:int]", |w, cmd, _, _| {
+        let p = pos(cmd, "pos")?;
+        let o = match w.block_entity(p) {
+            0 => return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p)))),
+            id => id,
+        };
+        let count: u32 = int(cmd, "count").unwrap_or(1);
+        let left = w.inventory(o).insert(ItemStack::new(id(cmd, "item")?, count));
+        Ok((count - left.count).to_string())
+    }),
+    ("inv", "@owner", |w, cmd, _, _| {
+        let inv = w.inventory(owner(w, cmd)?);
+        let parts: Vec<String> = (0..inv.size()).map(|i| (i, inv.get(i))).filter(|(_, s)| !s.is_empty()).map(|(i, s)| format!("{i}:{}:{}", item_name(s.item), s.count)).collect();
+        Ok(parts.join(" "))
+    }),
+    ("spawn", "<kind:entity> <pos:pos>", |w, cmd, _, _| {
+        let p = pos(cmd, "pos")?;
+        Ok(w.spawn_kind(id(cmd, "kind")?, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5]).to_string())
+    }),
+    ("entity", "@entity", |w, cmd, _, _| {
+        let e = w.entity(owner(w, cmd)?).ok_or("no such entity")?;
+        Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
+    }),
+    ("size", "@entity", |w, cmd, _, _| {
+        let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
+        Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
+    }),
+    ("near", "<pos:pos> <r:float>", |w, cmd, player, _| {
+        let p = pos(cmd, "pos")?;
+        let r = cmd.float("r").ok_or("missing r")?;
+        let ids = w.near([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], r, None);
+        let parts: Vec<String> = ids.iter().filter(|&&id| id != player).filter_map(|&id| w.entity(id).map(|e| format!("{id}:{}", name_of(ek::ENTITY, e.kind)))).collect();
+        Ok(parts.join(" "))
+    }),
+    ("animate", "@owner [name:word]", |w, cmd, _, _| {
+        w.play_animation(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
+        Ok(String::new())
+    }),
+    ("survey", "<r:int>", |w, cmd, _, me| {
+        // Biomes of every block within `r` of the player, and where glow crystals are.
+        let r: i32 = int(cmd, "r")?;
+        let crystal = Block::lookup("testmod:glow_crystal").ok_or("no crystal block")?;
+        let cave = Tag::named("cave");
+        let mut biomes: std::collections::BTreeMap<&str, u32> = Default::default();
+        let (mut in_cave, mut elsewhere) = (0, 0);
+        for y in me[1] - r..=me[1] + r {
+            for z in me[2] - r..=me[2] + r {
+                for x in me[0] - r..=me[0] + r {
+                    let b = w.biome([x, y, z]);
+                    *biomes.entry(name_of(ek::BIOME, b)).or_default() += 1;
+                    if block_of(w.get([x, y, z])) == block_of(crystal) {
+                        if cave.on_biome(b) { in_cave += 1 } else { elsewhere += 1 }
+                    }
+                }
+            }
+        }
+        let list: Vec<String> = biomes.iter().map(|(n, k)| format!("{n}={k}")).collect();
+        Ok(format!("{} | crystals {in_cave} {elsewhere}", list.join(" ")))
+    }),
+    ("drops", "<n:int>", |w, cmd, _, me| {
+        // `n` dropped stacks of a few kinds (blocks and sprites) in a grid north of the
+        // player, 1.1 apart so they do not merge.
+        let n: u32 = int(cmd, "n")?;
+        let kinds: Vec<u32> = ["base:dirt", "base:coal", "base:iron_pickaxe", "base:dandelion", "base:stick", "base:torch"].iter().filter_map(|k| Item::lookup(k)).collect();
+        let side = (n as f64).sqrt().ceil() as u32;
+        for i in 0..n {
+            let (x, z) = ((i % side) as f64 * 1.1 - side as f64 * 0.55, -3.0 - (i / side) as f64 * 1.1);
+            w.spawn_item([me[0] as f64 + x, me[1] as f64 + 0.5, me[2] as f64 + z], ItemStack::new(kinds[i as usize % kinds.len()], 1));
+        }
+        Ok(format!("{n} drops"))
+    }),
+    ("find", "<r:int> <block:block>", |w, cmd, _, me| {
+        // The first block of that kind within `r` of the player.
+        let r: i32 = int(cmd, "r")?;
+        let want = block_of(id(cmd, "block")?);
+        for y in me[1] - r..=me[1] + r {
+            for z in me[2] - r..=me[2] + r {
+                for x in me[0] - r..=me[0] + r {
+                    if block_of(w.get([x, y, z])) == want {
+                        return Ok(format!("{x} {y} {z}"));
+                    }
+                }
+            }
+        }
+        Err("not found".into())
+    }),
+    ("census", "<r:int> <blocks:word>", |w, cmd, _, me| {
+        // How many of each block (`a,b`) lie within `r` of the player.
+        let r: i32 = int(cmd, "r")?;
+        let names: Vec<&str> = word(cmd, "blocks")?.split(',').collect();
+        let ids: Vec<u32> = names.iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
+        let mut counts = vec![0u32; ids.len()];
+        for y in me[1] - r..=me[1] + r {
+            for z in me[2] - r..=me[2] + r {
+                for x in me[0] - r..=me[0] + r {
+                    let b = block_of(w.get([x, y, z]));
+                    if let Some(i) = ids.iter().position(|&id| id == b) {
+                        counts[i] += 1;
+                    }
+                }
+            }
+        }
+        Ok(names.iter().zip(&counts).map(|(n, k)| format!("{n}={k}")).collect::<Vec<_>>().join(" "))
+    }),
+    ("cube_top_plants", "<r:int>", |w, cmd, _, me| {
+        // Land columns within `r` of the player, split by whether the ground is the top layer
+        // of its cube, and how many of each carry a plant: `tops plants others plants`.
+        let r: i32 = int(cmd, "r")?;
+        let plants: Vec<u32> = ["base:tall_grass", "base:dandelion", "base:rose"].iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
+        let mut n = [0u32; 4];
+        for z in me[2] - r..=me[2] + r {
+            for x in me[0] - r..=me[0] + r {
+                let h = base_api::OVERWORLD.column(5, x, z).height;
+                if h < 63 {
+                    continue;
+                }
+                let k = if (h + 1) & 15 == 0 { 0 } else { 2 };
+                n[k] += 1;
+                n[k + 1] += plants.contains(&block_of(w.get([x, h + 1, z]))) as u32;
+            }
+        }
+        Ok(format!("{} {} {} {}", n[0], n[1], n[2], n[3]))
+    }),
+    ("play", "<sound:word>", |w, cmd, _, me| {
+        // A sound event at the player, by name.
+        static BOOM: Sound = Sound::named("testmod:boom");
+        let _ = word(cmd, "sound")?;
+        w.play_sound(&BOOM, [me[0] as f64, me[1] as f64, me[2] as f64], 1.0);
+        Ok(String::new())
+    }),
+    ("onto", "<id:int> <h:float> [rider:int]", |w, cmd, player, _| {
+        // The player (or the rider) on top of an entity `h` high, in the same tick (moving
+        // platforms move on while a teleport by command makes its way).
+        let e = w.entity(int(cmd, "id")?).ok_or("no such entity")?;
+        let rider = cmd.int("rider").map_or(player, |r| r as u64);
+        w.teleport(rider, None, [e.pos[0], e.pos[1] + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos[2]]);
+        Ok(String::new())
+    }),
+    ("navigate", "@owner <to:pos>", |w, cmd, _, _| {
+        let p = pos(cmd, "to")?;
+        Ok((w.navigate(owner(w, cmd)?, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], 1.0) as u32).to_string())
+    }),
+    ("structure", "<name:word> <r:int>", |w, cmd, _, me| Ok(w.structure_near(word(cmd, "name")?, me, int(cmd, "r")?).map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))),
+    // A timer on the player: `after 60`, then `rings` counts the ones that fired.
+    ("after", "<ticks:int>", |w, cmd, player, _| {
+        w.after(player, int(cmd, "ticks")?, &RANG, player);
+        Ok(String::new())
+    }),
+    ("rings", "", |_, _, _, _| Ok(RINGS.load(Ordering::Relaxed).to_string())),
+    ("look", "", |w, _, player, _| Ok(w.look_at(player, 5.0, false).map_or("none".into(), |l| format!("{} {} {} {} {}", l.frame, l.pos[0], l.pos[1], l.pos[2], block_name(l.state))))),
+    ("place", "<template:word> <pos:pos>", |w, cmd, _, _| Ok((w.place(&Template::generated(word(cmd, "template")?.to_string()), pos(cmd, "pos")?) as u32).to_string())),
+    ("heal", "", |w, _, player, _| {
+        let mut st = w.entity(player).ok_or("no player")?;
+        st.health = st.max_health;
+        w.set_entity(player, &st);
+        Ok(String::new())
+    }),
+    ("push", "<x:float> <y:float> <z:float> [id:int]", |w, cmd, player, _| {
+        let v = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
+        w.push(cmd.int("id").map_or(player, |i| i as u64), v);
+        Ok(String::new())
+    }),
+    ("drive", "<id:int> <dx:float> <dz:float> <ticks:int>", |_, cmd, _, _| {
+        let dir = [cmd.float("dx").unwrap_or(0.0) as f32, cmd.float("dz").unwrap_or(0.0) as f32];
+        DRIVEN.lock().unwrap().push((int(cmd, "id")?, dir, int(cmd, "ticks")?));
+        Ok(String::new())
+    }),
+    ("health", "[id:int]", |w, cmd, player, _| {
+        let id = cmd.int("id").map_or(player, |i| i as u64);
+        Ok(w.entity(id).map_or("none".into(), |e| format!("{}", e.health)))
+    }),
+    ("time", "<ticks:int>", |w, cmd, _, _| {
+        w.set_day_time(int(cmd, "ticks")?);
+        Ok(String::new())
+    }),
+    ("mode", "survival | creative | spectator", |w, cmd, player, _| {
+        let m = ["survival", "creative", "spectator"].iter().position(|m| cmd.has(m)).ok_or("no game mode")?;
+        w.set_game_mode(player, m as u32);
+        Ok(String::new())
+    }),
+    ("menu", "<which:word> <pos:pos>", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
+        let p = pos(cmd, "pos")?;
+        if !w.open_menu_kind_at(player, m, p) {
+            return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p))));
+        }
+        Ok(String::new())
+    }),
+    ("vmenu", "<which:word> <slots:int> [items:text]", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
+        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
+        let id = w.virtual_inventory(int(cmd, "slots")?, pos);
+        let inv = w.inventory(id);
+        // Pairs of item and count.
+        let words: Vec<&str> = cmd.text("items").unwrap_or("").split_whitespace().collect();
+        for (i, pair) in words.chunks(2).enumerate() {
+            if let [n, c] = pair {
+                inv.set(i as u32, ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?));
+            }
+        }
+        w.open_menu_kind(player, m, id);
+        Ok(id.to_string())
+    }),
+    ("remove", "<id:int>", |w, cmd, _, _| {
+        w.remove(int(cmd, "id")?);
+        Ok(String::new())
+    }),
+    ("mark", "<id:int> <value:int>", |w, cmd, _, _| {
+        *w.component_mut(int(cmd, "id")?, &MARK).ok_or("no mark component")? = int(cmd, "value")?;
+        Ok(String::new())
+    }),
+    ("secret", "@owner <index:int> [value:int]", |w, cmd, _, _| {
+        let inv = w.inventory(owner(w, cmd)?);
+        let slot: u32 = int(cmd, "index")?;
+        let s = inv.get(slot);
+        match cmd.int("value") {
+            Some(v) => {
+                inv.set(slot, s.with(&SECRET, v as u32));
+                Ok(String::new())
+            }
+            None => Ok(SECRET.stack_only(&s).map_or("none".into(), |v| v.to_string())),
+        }
+    }),
+    ("events", " | reset", |_, cmd, _, _| {
+        if cmd.has("reset") {
+            COUNTS.iter().for_each(|c| c.store(0, Ordering::Relaxed));
+        }
+        Ok(EVENT_NAMES.iter().zip(&COUNTS).map(|(n, c)| format!("{n}={}", c.load(Ordering::Relaxed))).collect::<Vec<_>>().join(" "))
+    }),
+    ("attr", "@owner <attribute:word>", |w, cmd, _, _| {
+        let (v, text) = w.explain_attribute(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()));
+        Ok(format!("{v} | {text}"))
+    }),
+    ("attr_mod", "@owner <attribute:word> <mod:word> <op:int> <amount:float> <ticks:int>", |w, cmd, _, _| {
+        let o = owner(w, cmd)?;
+        let amount = cmd.float("amount").ok_or("missing amount")?;
+        w.add_modifier(o, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?, int(cmd, "op")?, amount, int(cmd, "ticks")?);
+        Ok(String::new())
+    }),
+    ("attr_rm", "@owner <attribute:word> <mod:word>", |w, cmd, _, _| {
+        w.remove_modifier(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?);
+        Ok(String::new())
+    }),
+    ("loot", "<table:word> <n:int> [ctx:text]", |w, cmd, _, _| {
+        let table = LootTable::generated(word(cmd, "table")?.to_string());
+        let n: u32 = int(cmd, "n")?;
+        let mut ctx = LootCtx::default();
+        for word in cmd.text("ctx").unwrap_or("").split_whitespace() {
+            match word {
+                "fire" => ctx.on_fire = true,
+                "player" => ctx.by_player = true,
+                // Mined by the tool, from the block the table is named after.
+                "mined" => ctx.mined = Block::lookup(table.name()).ok_or("not a block's table")?,
+                tool => ctx.tool = ItemStack::new(item(tool)?, 1),
+            }
+        }
+        let mut totals: std::collections::BTreeMap<String, u32> = Default::default();
+        for _ in 0..n {
+            for s in w.roll_loot(table, &ctx) {
+                *totals.entry(item_name(s.item).to_string()).or_default() += s.count;
+            }
+        }
+        Ok(totals.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "))
+    }),
+    ("break", "<pos:pos> [tool:item]", |w, cmd, player, _| {
+        let tool = cmd.id("tool").map_or(ItemStack::EMPTY, |t| ItemStack::new(t, 1));
+        Ok((w.break_block(pos(cmd, "pos")?, tool, player, true) as u32).to_string())
+    }),
+    ("damage", "<amount:float> [cause:int]", |w, cmd, player, _| {
+        let amount = cmd.float("amount").ok_or("missing amount")?;
+        let cause: u32 = int(cmd, "cause").unwrap_or(abi::damage::GENERIC);
+        let q = abi::Query { entity: player, cause, amount, ..query() };
+        let (v, text) = w.explain(&chain::DAMAGE, amount, &q);
+        Ok(format!("{v} | {text}"))
+    }),
+    ("in_liquid", "<x:float> <y:float> <z:float>", |w, cmd, _, _| {
+        let p = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
+        Ok((w.in_liquid(p) as u32).to_string())
+    }),
+    ("near_bodies", "<pos:pos> <r:float>", |w, cmd, _, _| {
+        let p = pos(cmd, "pos")?;
+        let ids = w.near_bodies([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], cmd.float("r").ok_or("missing r")?);
+        Ok(ids.iter().filter_map(|&id| w.entity(id).map(|e| name_of(ek::ENTITY, e.kind).to_string())).collect::<Vec<_>>().join(" "))
+    }),
+    ("protect", "<pos:pos> | off", |_, cmd, _, _| {
+        *PROTECTED.lock().unwrap() = if cmd.has("off") { None } else { Some(pos(cmd, "pos")?) };
+        Ok(String::new())
+    }),
+    ("snapshot", "<from:pos> <to:pos>", |w, cmd, _, _| {
+        let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
+        let mut out = Vec::new();
+        for y in p[1].min(q[1])..=p[1].max(q[1]) {
+            for z in p[2].min(q[2])..=p[2].max(q[2]) {
+                for x in p[0].min(q[0])..=p[0].max(q[0]) {
+                    out.push(w.get([x, y, z]).to_string());
+                }
+            }
+        }
+        Ok(out.join(" "))
+    }),
+];

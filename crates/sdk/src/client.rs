@@ -222,6 +222,11 @@ impl Client {
         (b != u32::MAX).then_some(b)
     }
 
+    /// Whether the cube holding `pos` is here and has been drawn.
+    pub fn cube_shown(&self, pos: [i32; 3]) -> bool {
+        unsafe { (host().client_cube_shown)(self.raw, &pos) != 0 }
+    }
+
     /// The light the client has at `pos` (sky level in the low byte, then block red, green,
     /// blue), `None` while that cube is not loaded.
     pub fn light(&self, pos: [i32; 3]) -> Option<u32> {
@@ -492,8 +497,49 @@ impl World {
         unsafe { (host().entity_teleport)(self.raw(), id, d, &pos) }
     }
 
-    pub fn set_time(&self, time: u64) {
+    /// Rain or thunder in this dimension for `ticks`, after which it changes by itself.
+    pub fn set_weather(&self, raining: bool, thunder: bool, ticks: u32) {
+        unsafe { (host().set_weather)(self.raw(), raining as u32, thunder as u32, ticks) }
+    }
+
+    pub fn raining(&self) -> bool {
+        unsafe { (host().raining)(self.raw()) != 0 }
+    }
+
+    pub fn thundering(&self) -> bool {
+        unsafe { (host().thundering)(self.raw()) != 0 }
+    }
+
+    /// A white flash on an entity for everyone who sees it (a creeper about to go off).
+    pub fn flash(&self, id: u64) {
+        unsafe { (host().entity_flash)(self.raw(), id) }
+    }
+
+    /// A player's `abi::permission` level: ask it before anything only some may do.
+    pub fn permission(&self, player: u64) -> u32 {
+        unsafe { (host().player_permission)(self.raw(), player) }
+    }
+
+    /// Gives a player a level, remembered with the world.
+    pub fn set_permission(&self, player: u64, level: u32) {
+        unsafe { (host().set_player_permission)(self.raw(), player, level) }
+    }
+
+    /// Sets this dimension's time of day (0 sunrise, 6000 noon, 18000 midnight). Only the sky and
+    /// what follows the day move: what waits on ticks keeps its pace.
+    pub fn set_day_time(&self, time: u64) {
         unsafe { (host().set_time)(self.raw(), time) }
+    }
+
+    /// This dimension's time of day, counting on past a day. `w.time()` is another clock: ticks
+    /// the world has run, which nothing moves.
+    pub fn day_time(&self) -> u64 {
+        unsafe { (host().day_time)(self.raw()) }
+    }
+
+    /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
+    pub fn skip_ticks(&self, ticks: u64) {
+        unsafe { (host().skip_ticks)(self.raw(), ticks) }
     }
 
     /// 0 survival, 1 creative, 2 spectator.

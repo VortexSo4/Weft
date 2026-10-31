@@ -37,6 +37,12 @@ pub struct WorldMeta {
     pub seed: u64,
     pub last_played: u64,
     pub times: Vec<(String, u64)>,
+    /// What `/time` moved each dimension's time of day by.
+    pub day_offsets: Vec<(String, i64)>,
+    /// Each dimension's weather: raining, thunder, the tick it changes.
+    pub weather: Vec<(String, bool, bool, u64)>,
+    /// Players given a permission level: their key and the level.
+    pub ops: Vec<(String, u32)>,
     /// Area edits per dimension (`server::area::AreaFill::spec`), in order.
     pub edits: Vec<(String, String)>,
     pub next_entity: u64,
@@ -53,7 +59,7 @@ pub fn now_secs() -> u64 {
 impl WorldMeta {
     pub fn load(dir: &Path) -> Option<WorldMeta> {
         let src = std::fs::read_to_string(dir.join("world.txt")).ok()?;
-        let mut m = WorldMeta { dir: dir.to_path_buf(), format: 1, name: String::new(), seed: 0, last_played: 0, times: Vec::new(), edits: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
+        let mut m = WorldMeta { dir: dir.to_path_buf(), format: 1, name: String::new(), seed: 0, last_played: 0, times: Vec::new(), day_offsets: Vec::new(), ops: Vec::new(), weather: Vec::new(), edits: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
         for (_, k, v) in crate::kv::pairs(&src) {
             match k {
                 "name" => m.name = v.to_string(),
@@ -62,7 +68,16 @@ impl WorldMeta {
                 "last_played" => m.last_played = v.parse().unwrap_or(0),
                 "next_entity" => m.next_entity = v.parse().unwrap_or(1),
                 _ => {
-                    if let Some(d) = k.strip_prefix("time.") {
+                    if let Some(d) = k.strip_prefix("weather.") {
+                        let n: Vec<u64> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                        if let [rain, thunder, until] = n[..] {
+                            m.weather.push((d.to_string(), rain != 0, thunder != 0, until));
+                        }
+                    } else if let Some(key) = k.strip_prefix("op.") {
+                        m.ops.push((key.to_string(), v.parse().unwrap_or(0)));
+                    } else if let Some(d) = k.strip_prefix("day_offset.") {
+                        m.day_offsets.push((d.to_string(), v.parse().unwrap_or(0)));
+                    } else if let Some(d) = k.strip_prefix("time.") {
                         m.times.push((d.to_string(), v.parse().unwrap_or(0)));
                     } else if let Some(d) = k.strip_prefix("edit.") {
                         // `edit.<dimension>.<n>`: the dimension's name has a colon, not a dot.
@@ -84,6 +99,15 @@ impl WorldMeta {
             "format = {}\nname = {}\nseed = {}\nlast_played = {}\nnext_entity = {}\n",
             self.format, self.name, self.seed, self.last_played, self.next_entity
         );
+        for (d, rain, thunder, until) in &self.weather {
+            s.push_str(&format!("weather.{d} = {} {} {until}\n", *rain as u8, *thunder as u8));
+        }
+        for (key, level) in &self.ops {
+            s.push_str(&format!("op.{key} = {level}\n"));
+        }
+        for (d, t) in &self.day_offsets {
+            s.push_str(&format!("day_offset.{d} = {t}\n"));
+        }
         for (d, t) in &self.times {
             s.push_str(&format!("time.{d} = {t}\n"));
         }
@@ -97,7 +121,9 @@ impl WorldMeta {
             s.push_str(&format!("mod.{id} = {v}\n"));
         }
         let _ = std::fs::create_dir_all(&self.dir);
-        if let Err(e) = std::fs::write(self.dir.join("world.txt"), s) {
+        // Whole or not at all: a crash in the middle must not leave half of it.
+        let tmp = self.dir.join("world.new");
+        if let Err(e) = std::fs::write(&tmp, s).and_then(|_| std::fs::rename(&tmp, self.dir.join("world.txt"))) {
             log::error!("saving world info: {e}");
         }
     }
@@ -128,7 +154,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         n += 1;
         dir = saves.join(format!("{base}_{n}"));
     }
-    let m = WorldMeta { dir, format: SAVE_FORMAT, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), edits: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
+    let m = WorldMeta { dir, format: SAVE_FORMAT, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), day_offsets: Vec::new(), ops: Vec::new(), weather: Vec::new(), edits: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
     m.save();
     m
 }
@@ -223,7 +249,45 @@ impl Region {
         } else {
             file.write_all(&vec![0u8; ENTRIES * 8])?;
         }
-        Ok(Region { file, header })
+        let mut region = Region { file, header };
+        region.compact(path, len)?;
+        Ok(region)
+    }
+
+    /// New versions of a cube go at the end, so old ones pile up: once more than half of a file
+    /// is that, it is written again with what is in use. Whole or not at all.
+    fn compact(&mut self, path: &Path, len: u64) -> std::io::Result<()> {
+        let head = (ENTRIES * 8) as u64;
+        let used: u64 = self.header.iter().map(|h| h.1 as u64).sum();
+        if len <= (used + head) * 2 + (1 << 20) {
+            return Ok(());
+        }
+        let tmp = path.with_extension("compact");
+        let mut out = File::create(&tmp)?;
+        out.write_all(&vec![0u8; ENTRIES * 8])?;
+        let mut header = vec![(0u32, 0u32); ENTRIES];
+        let mut at = head as u32;
+        for i in 0..ENTRIES {
+            if let Some(data) = self.read(i) {
+                out.write_all(&data)?;
+                header[i] = (at, data.len() as u32);
+                at += data.len() as u32;
+            }
+        }
+        out.seek(SeekFrom::Start(0))?;
+        for (o, l) in &header {
+            out.write_all(&o.to_le_bytes())?;
+            out.write_all(&l.to_le_bytes())?;
+        }
+        drop(out);
+        // Windows won't replace an open file: this one is reopened for it.
+        let placeholder = File::open(&tmp)?;
+        self.file = placeholder;
+        std::fs::rename(&tmp, path)?;
+        self.file = OpenOptions::new().read(true).write(true).open(path)?;
+        self.header = header;
+        log::info!("{}: {} KB of old versions dropped", path.display(), (len - at as u64) / 1024);
+        Ok(())
     }
 
     fn read(&mut self, i: usize) -> Option<Vec<u8>> {
@@ -239,6 +303,9 @@ impl Region {
 
     fn write(&mut self, i: usize, data: &[u8]) -> std::io::Result<()> {
         let end = self.file.seek(SeekFrom::End(0))?;
+        if end + data.len() as u64 > u32::MAX as u64 {
+            return Err(std::io::Error::other("region file over 4 GB until it is reopened and compacted"));
+        }
         self.file.write_all(data)?;
         self.header[i] = (end as u32, data.len() as u32);
         self.file.seek(SeekFrom::Start((i * 8) as u64))?;
@@ -259,6 +326,8 @@ pub struct Storage {
     /// Per dimension, the cubes saved: what differs from generation (clients generate the
     /// rest themselves).
     saved: Vec<FxHashSet<IVec3>>,
+    /// What was last written for a cube this session: an unchanged one is not appended again.
+    last_written: FxHashMap<(u32, IVec3), u64>,
 }
 
 fn region_of(cube: IVec3) -> (IVec3, usize) {
@@ -294,7 +363,7 @@ impl Storage {
                 }
             }
         }
-        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved }
+        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default() }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {
@@ -359,6 +428,15 @@ impl Storage {
         let len = (buf.len() - 4) as u32;
         buf[..4].copy_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(entities);
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = rustc_hash::FxHasher::default();
+            buf.hash(&mut h);
+            h.finish()
+        };
+        if self.last_written.insert((dim, pos), hash) == Some(hash) {
+            return;
+        }
         let packed = lz4_flex::compress_prepend_size(&buf);
         let (r, i) = region_of(pos);
         if let Some(reg) = self.region(dim, r) {
@@ -408,8 +486,9 @@ impl Screen for ConfirmDelete {
                         let trash = parent.join(".trash");
                         let _ = std::fs::create_dir_all(&trash);
                         let target = trash.join(format!("{}-{}", leaf.to_string_lossy(), now_secs()));
-                        if std::fs::rename(&dir, &target).is_err() {
-                            let _ = std::fs::remove_dir_all(&dir);
+                        // The screen promised it can be got back, so failing means keeping it.
+                        if let Err(e) = std::fs::rename(&dir, &target) {
+                            log::error!("could not move {} to the trash, it stays where it is: {e}", dir.display());
                         }
                     }
                     c.requests.push(Request::Close);

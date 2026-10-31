@@ -15,13 +15,13 @@ pub static SMELTED: Event<Smelted> = Event::named("base:smelted");
 
 value! {
     /// A furnace's state, synced to whoever has it open.
-    pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
+    pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32, pub cooking_item: u32 }
 }
 pub static SMELTING_STATE: Component<Smelting> = Component::named("base:smelting");
 
 value! {
     /// A player's hunger and air.
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32 }
+    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub food_timer: u32 }
 }
 pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
 
@@ -36,12 +36,29 @@ value! {
     pub struct Food { pub hunger: u32, pub saturation: f32 }
 }
 value! {
-    /// Protection while worn: 4% less damage per point, like 1.7.10.
-    pub struct Armor { pub points: u32 }
+    /// Protection while worn: about 4% less damage per point, less against big hits unless
+    /// `toughness` holds them back, the way modern's armor works.
+    pub struct Armor { pub points: u32, pub toughness: f32 }
 }
 
 // The common vocabulary the base game reads; any mod may set these on its own content.
 pub static FOOD: Component<Food> = Component::named("food");
+
+/// Eating for `.on_use`: hunger and saturation from its `FOOD`, one item less. With `.use_ticks(32)`
+/// it takes as long as the base game's food.
+pub fn eat(u: &mut ItemUse) -> bool {
+    let stack = u.stack();
+    let Some(food) = FOOD.on_stack(&stack) else { return false };
+    let w = u.world();
+    let Some(h) = w.component_mut(u.player(), &HUNGER) else { return false };
+    if h.food >= 20.0 {
+        return false;
+    }
+    h.food = (h.food + food.hunger as f32).min(20.0);
+    h.saturation = (h.saturation + food.saturation).min(h.food);
+    u.set_stack(stack.shrink(1));
+    true
+}
 /// Burn time in ticks.
 pub static FUEL: Component<u32> = Component::named("fuel");
 pub static ARMOR: Component<Armor> = Component::named("armor");
@@ -62,6 +79,13 @@ pub static FEET: EquipmentSlot = EquipmentSlot::named("base:feet");
 
 pub static OVERWORLD: Dimension = Dimension::named("base:overworld");
 pub static FLATLANDS: Dimension = Dimension::named("base:flatlands");
+
+/// What is in the sky of the game's dimensions. Any of them can be changed or taken out by a mod:
+/// `r.sky_body(&OVERWORLD, &MOON).size(40.0)`, `r.remove_sky(&OVERWORLD, &STARS)`.
+pub static SUN: SkyObject = SkyObject::named("base:sun");
+pub static MOON: SkyObject = SkyObject::named("base:moon");
+pub static STARS: SkyObject = SkyObject::named("base:stars");
+pub static CLOUDS: SkyObject = SkyObject::named("base:clouds");
 
 /// Vanilla's creative tabs.
 pub mod tabs {

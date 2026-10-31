@@ -489,6 +489,8 @@ impl StackData for ItemStack {
 pub static MAX_STACK: Component<u32> = Component::named(abi::comp::MAX_STACK);
 pub static DURABILITY: Component<u32> = Component::named(abi::comp::DURABILITY);
 pub static ATTACK_DAMAGE: Component<f32> = Component::named(abi::comp::ATTACK_DAMAGE);
+pub static ATTACK_SPEED: Component<f32> = Component::named(abi::comp::ATTACK_SPEED);
+pub static USE_TICKS: Component<u32> = Component::named(abi::comp::USE_TICKS);
 pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);

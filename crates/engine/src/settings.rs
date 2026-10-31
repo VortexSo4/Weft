@@ -46,9 +46,6 @@ impl Settings {
     pub fn view_distance(&self) -> i32 {
         number("core:view_distance") as i32
     }
-    pub fn lod_distance(&self) -> i32 {
-        number("core:lod_distance") as i32
-    }
     pub fn vsync(&self) -> bool {
         number("core:vsync") != 0.0
     }
@@ -208,7 +205,9 @@ pub fn parse_key(s: &str) -> Option<Key> {
         ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight, ArrowUp, ArrowDown, ArrowLeft,
         ArrowRight, Minus, Equal, BracketLeft, BracketRight, Backslash, Semicolon, Quote, Comma, Period, Slash,
         Backquote, CapsLock, Insert, Delete, Home, End, PageUp, PageDown, Numpad0, Numpad1, Numpad2, Numpad3,
-        Numpad4, Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
+        Numpad4, Numpad5, Numpad6, Numpad7, Numpad8, Numpad9, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide,
+        NumpadDecimal, NumpadEnter, NumpadEqual, NumLock, ScrollLock, PrintScreen, Pause, ContextMenu, IntlBackslash,
+        F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24, SuperLeft, SuperRight,
     ];
     // Short names ("R", "5", "space", "lshift") as well as winit's ("KeyR", "Digit5", "ShiftLeft").
     let short = match s.to_ascii_lowercase().as_str() {

@@ -112,16 +112,4 @@ impl Post {
             }
         }
     }
-
-    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
-        if let Some((t, ..)) = self.targets.take() {
-            t.into_iter().for_each(|t| gpu.destroy_texture(t));
-        }
-        if let Some(p) = self.pipeline.take() {
-            gpu.destroy_pipeline(p);
-        }
-        for b in self.params.drain(..) {
-            gpu.destroy_buffer(b);
-        }
-    }
 }

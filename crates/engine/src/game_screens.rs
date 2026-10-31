@@ -194,18 +194,18 @@ impl Chat {
     /// Opened with `/` the command list shows at once.
     pub fn new(text: &str) -> Chat {
         let mut st = ChatState::default();
-        st.update(text, &[]);
+        st.update(text, &[], weft_abi::permission::OWNER);
         Chat { state: Rc::new(RefCell::new(st)) }
     }
 }
 
 impl ChatState {
-    fn update(&mut self, text: &str, players: &[String]) {
+    fn update(&mut self, text: &str, players: &[String], permission: u32) {
         self.text = text.to_string();
         self.selected = 0;
         self.stem = None;
         self.completion = text.strip_prefix('/').map(|line| {
-            let mut comp = crate::commands::complete(content(), line, players);
+            let mut comp = crate::commands::complete(content(), line, players, permission);
             comp.from += 1;
             comp
         });
@@ -256,8 +256,9 @@ impl Screen for Chat {
                     max: 256,
                     on_change: Some(Rc::new(move |ctx: &mut Ctx, v: &str| {
                         let players = ctx.client.as_ref().map(|c| c.players.clone()).unwrap_or_default();
+                        let permission = ctx.client.as_ref().map_or(0, |c| c.permission);
                         let mut s = state.borrow_mut();
-                        s.update(v, &players);
+                        s.update(v, &players, permission);
                         s.history = None;
                         ctx.requests.push(Request::Rebuild);
                     })),
@@ -271,11 +272,12 @@ impl Screen for Chat {
 
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
         let players = ctx.client.as_ref().map(|c| c.players.clone()).unwrap_or_default();
+        let permission = ctx.client.as_ref().map_or(0, |c| c.permission);
         let sent = ctx.client.as_ref().map(|c| c.sent.clone()).unwrap_or_default();
         let mut st = self.state.borrow_mut();
         let n = st.completion.as_ref().map_or(0, |c| c.suggestions.len());
         let set = |st: &mut ChatState, text: String, ctx: &mut Ctx| {
-            st.update(&text, &players);
+            st.update(&text, &players, permission);
             ctx.set_input("chat", text);
             ctx.requests.push(Request::Rebuild);
         };
@@ -304,6 +306,10 @@ impl Screen for Chat {
             }
             Key::Code(KeyCode::ArrowUp | KeyCode::ArrowDown) if !sent.is_empty() => {
                 let up = key == Key::Code(KeyCode::ArrowUp);
+                // Not in the history yet: down keeps what is being typed.
+                if st.history.is_none() && !up {
+                    return true;
+                }
                 let at = match (st.history, up) {
                     (None, true) => Some(sent.len() - 1),
                     (None, false) => None,

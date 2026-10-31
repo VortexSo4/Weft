@@ -27,6 +27,8 @@ struct Slot {
     /// are meshed as solid, and it is meshed once all 26 around it are here or never coming
     /// (meshing it before its edge and corner neighbors came meshed it again for each of them).
     hidden: u32,
+    /// The cubes around it that are empty sky for now (`terrain::Around::sky`).
+    sky: u32,
     /// Its mesh is out of date.
     dirty: bool,
     /// A mesh of it has been drawn (or it is air): its column shows it (`column_shown`).
@@ -52,6 +54,8 @@ pub struct ClientWorld {
     tx: Sender<MeshResult>,
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
+    /// What left the world this batch, to be freed off the main thread.
+    unloaded: Vec<Slot>,
     next_version: u32,
     next_rev: u32,
     /// An opaque state standing in for hidden neighbors.
@@ -144,6 +148,7 @@ impl ClientWorld {
             tx,
             rx,
             removed: Vec::new(),
+            unloaded: Vec::new(),
             next_version: 0,
             next_rev: 0,
             filler: content().states.iter().position(|s| s.flags & weft_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
@@ -197,7 +202,7 @@ impl ClientWorld {
     /// Above the camera a cube not here yet is taken for air: those are the new top of the view
     /// while rising, nearly always sky.
     pub fn column_shown(&self, col: IVec2) -> bool {
-        shows_ground(self.range, self.eye, |y| self.cubes.get(&IVec3::new(col.x, y, col.y)).map(|s| (s.shown, s.cube.uniform_state() == Some(AIR))))
+        shows_ground(self.range, self.eye, |y| self.cubes.get(&IVec3::new(col.x, y, col.y)).map(|s| (s.shown, s.cube.uniform_state() == Some(AIR), s.sky & ABOVE != 0)))
     }
 
     /// Columns whose `column_shown` may have changed since the last call.
@@ -218,13 +223,19 @@ impl ClientWorld {
         self.cubes.get(&p).map(|s| (&s.cube, s.rev))
     }
 
+    /// Whether cube `p` is here and has been drawn.
+    pub fn cube_shown(&self, p: IVec3) -> bool {
+        self.cubes.get(&p).is_some_and(|s| s.shown)
+    }
+
     /// Whether every cube around `p` is present or never coming.
     fn neighbors_known(&self, p: IVec3) -> bool {
         if self.bounded {
             return true;
         }
         let def = &content().dims[self.dim as usize];
-        let hidden = self.cubes.get(&p).map_or(0, |s| s.hidden);
+        // Not waited for: what the terrain thread says is not coming, or is sky for now.
+        let hidden = self.cubes.get(&p).map_or(0, |s| s.hidden | s.sky);
         (0..27).all(|i| {
             let n = p + crate::world::cube::around(i);
             i == 13 || hidden & (1 << i) != 0 || n.y < def.min_cube_y || n.y > def.max_cube_y || self.cubes.contains_key(&n)
@@ -272,6 +283,11 @@ impl ClientWorld {
     }
 
     pub fn end_batch(&mut self) {
+        // Freed on a worker: a step of the view unloads thousands, a good part of a frame's time.
+        if !self.unloaded.is_empty() {
+            let unloaded = std::mem::take(&mut self.unloaded);
+            crate::background().spawn(move || drop(unloaded));
+        }
         let Some(mut b) = self.open.take() else { return };
         // A resend remeshes only what reads a changed block: light resends after an edit
         // reach far more cubes than the edit does.
@@ -336,8 +352,9 @@ impl ClientWorld {
         }
     }
 
-    /// `hidden`: the cubes around it never coming (`cube::around_mask` bits).
-    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u32) {
+    /// `around`: the cubes around it not to wait for.
+    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, around: super::terrain::Around) {
+        let (hidden, sky) = (around.hidden, around.sky);
         let col = IVec2::new(pos.x, pos.z);
         let mut fresh = false;
         let column = self.columns.entry(col).or_insert_with(|| {
@@ -355,7 +372,7 @@ impl ClientWorld {
         match self.cubes.entry(pos) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 self.next_rev += 1;
-                e.insert(Slot { cube, version: 0, hidden, dirty: false, shown: false, rev: self.next_rev });
+                e.insert(Slot { cube, version: 0, hidden, sky, dirty: false, shown: false, rev: self.next_rev });
                 self.changed_columns.insert(col);
                 if let Some(b) = &mut self.open {
                     b.fresh.push(pos);
@@ -366,6 +383,7 @@ impl ClientWorld {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let s = e.get_mut();
                 let fresh_hidden = std::mem::replace(&mut s.hidden, hidden) != hidden;
+                let fresh_hidden = (std::mem::replace(&mut s.sky, sky) != sky) | fresh_hidden;
                 let old = std::mem::replace(&mut s.cube, cube);
                 if !s.cube.same_blocks(&old) {
                     self.next_rev += 1;
@@ -384,7 +402,8 @@ impl ClientWorld {
     }
 
     pub fn remove(&mut self, pos: IVec3) {
-        if self.cubes.remove(&pos).is_some() {
+        if let Some(slot) = self.cubes.remove(&pos) {
+            self.unloaded.push(slot);
             let col = IVec2::new(pos.x, pos.z);
             if let Some(c) = self.columns.get_mut(&col) {
                 c.cubes -= 1;
@@ -605,8 +624,9 @@ impl ClientWorld {
             let pool = if urgent { crate::meshing_urgent() } else { crate::meshing() };
             pool.spawn(move || {
                 let t = std::time::Instant::now();
-                let n = neighborhood(&around, hidden, filler, pos);
-                let mesh = mesher::build(content(), &n, &ctm);
+                // Faces belong to the blocks they are on: air has none, whatever is around it.
+                let empty = around[13].as_ref().is_some_and(|c| c.uniform_state() == Some(crate::content::AIR));
+                let mesh = if empty { mesher::Mesh::default() } else { mesher::build(content(), &neighborhood(&around, hidden, filler, pos), &ctm) };
                 crate::diag::MESHED.add(1);
                 crate::diag::MESH_NS.add(t.elapsed().as_nanos() as u64);
                 let _ = tx.send(MeshResult { pos, version, mesh });
@@ -721,22 +741,30 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u32, filler: u32, pos:
     Neighborhood { states, light, biomes, origin: (pos * 16).to_array() }
 }
 
-/// `column_shown` over a column's cubes by height: (drawn, all air), `None` when not here.
-fn shows_ground(range: (i32, i32), eye: i32, cube: impl Fn(i32) -> Option<(bool, bool)>) -> bool {
+/// A cube's bit for the cube above it, in `cube::around_mask` order.
+const ABOVE: u32 = 1 << 22;
+
+/// `column_shown` over a column's cubes by height: (drawn, all air, nothing but sky above it for
+/// now), `None` when not here. Cubes missing under the camera may still hold ground, unless the
+/// next one down says they are the sky over a column whose ground came first.
+fn shows_ground(range: (i32, i32), eye: i32, cube: impl Fn(i32) -> Option<(bool, bool, bool)>) -> bool {
     let (lo, hi) = range;
+    let mut gap = false;
     for y in (lo..=hi).rev() {
         match cube(y) {
-            Some((true, air)) => {
+            Some((true, air, sky)) => {
+                gap &= !sky;
                 if !air {
-                    return true;
+                    return !gap;
                 }
             }
             None if y > eye => {}
-            Some((false, true)) if y > eye => {}
+            None => gap = true,
+            Some((false, true, _)) if y > eye => {}
             _ => return false,
         }
     }
-    hi >= lo
+    hi >= lo && !gap
 }
 
 #[cfg(test)]
@@ -749,12 +777,19 @@ mod tests {
     fn column_shown_while_rising() {
         // Ground at 0, air at 1, the rest not here yet.
         let cube = |y: i32| match y {
-            0 => Some((true, false)),
-            1 => Some((true, true)),
+            0 => Some((true, false, false)),
+            1 => Some((true, true, false)),
             _ => None,
         };
         assert!(shows_ground((0, 4), 1, cube), "missing cubes above the camera");
         assert!(!shows_ground((0, 4), 4, cube), "missing cubes below the camera");
+        // The ground came first: what is missing over it is sky.
+        let cube = |y: i32| match y {
+            0 => Some((true, false, false)),
+            1 => Some((true, true, true)),
+            _ => None,
+        };
+        assert!(shows_ground((0, 4), 4, cube), "only sky missing below the camera");
     }
 
     /// The whole-cube copy gives what reading every block does.

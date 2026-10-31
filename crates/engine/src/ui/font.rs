@@ -168,11 +168,6 @@ impl Font {
         self.glyphs.get(&c).copied().unwrap_or(self.fallback)
     }
 
-    /// Advance of a string in font pixels (unscaled).
-    pub fn width(&self, s: &str) -> f32 {
-        s.chars().map(|c| self.glyph(c).advance as f32).sum()
-    }
-
     pub fn uv(&self, g: Glyph) -> [f32; 4] {
         let (cx, cy) = cell_origin(g.cell);
         let x0 = (cx + g.left as u32) as f32 / self.atlas_width as f32;

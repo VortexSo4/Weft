@@ -24,11 +24,21 @@ const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 pub enum DimEvent {
     /// `block`: the state it was opened on, 0 when opened from code.
     OpenMenu { player: u64, menu: u32, owner: u64, block: u32 },
-    Died { player: u64 },
+    /// `killer`: the kind of what did it.
+    Died { player: u64, cause: u32, killer: Option<u32> },
+    SetPermission { player: u64, level: u32 },
+    SetWeather { dim: u32, raining: bool, thunder: bool, ticks: u32 },
+    /// A white flash on it for those who see it.
+    Flash { id: u64 },
+    /// Its arm swings for those who see it.
+    EntitySwing { id: u64 },
+    /// A sprinting hit landed: the client stops sprinting.
+    StopSprint { player: u64 },
     Packet { player: u64, channel: u32, data: Vec<u8> },
     /// `dim` u32::MAX = the region's own dimension.
     Teleport { from: u32, id: u64, dim: u32, pos: DVec3 },
     SetTime { dim: u32, time: u64 },
+    SkipTicks { dim: u32, ticks: u64 },
     /// `server::area`, done at the end of the tick across every region of `dim`.
     AreaFill { dim: u32, fill: super::area::AreaFill },
     SetMode { player: u64, mode: crate::world::GameMode },
@@ -47,8 +57,15 @@ pub struct Dim {
     pub seed: u64,
     pub cubes: FxHashMap<IVec3, Arc<Cube>>,
     pub time: u64,
+    /// What `/time` moved the time of day by, from `time`.
+    pub day_offset: i64,
+    pub raining: bool,
+    pub thunder: bool,
     rng: Rng,
     scheduled: BinaryHeap<Reverse<(u64, i32, i32, i32)>>,
+    /// Cubes whose copy on disk holds entities or ticks, written again even if nothing else
+    /// changed: what left them must not come back from there.
+    pub on_disk: FxHashSet<IVec3>,
     /// Next growth step of every growing block (the source of truth) and the queue ordering
     /// them (entries that no longer match the map are stale).
     growth: FxHashMap<IVec3, u64>,
@@ -159,20 +176,19 @@ pub fn finish_generated(c: &Content, dim: u32, seed: u64, pos: IVec3, mut blocks
             host::invoke(owner, cb, &mut args);
         }
     }
+    // One look over the blocks for what is asked of them below: most cubes are all one thing.
     let max = c.states.len() as u32;
-    let mut bad = 0;
-    for b in blocks.iter_mut() {
-        if *b >= max {
-            bad = *b;
+    let (top, varied) = blocks.iter().fold((0, 0), |(top, varied), &b| (top.max(b), varied | (b ^ blocks[0])));
+    if top >= max {
+        for b in blocks.iter_mut().filter(|b| **b >= max) {
             *b = AIR;
         }
+        host::misuse("generator", || format!("{} wrote state {top}, which does not exist (air instead)", def.name));
     }
-    if bad != 0 {
-        host::misuse("generator", || format!("{} wrote state {bad}, which does not exist (air instead)", def.name));
-    }
-    place_ores(c, def, seed, pos, &mut blocks, &biomes);
-    place_structures(c, def, seed, pos, &mut blocks);
-    let mut cube = Cube::from_states(blocks.as_slice().try_into().unwrap());
+    let uniform = varied == 0 && top < max;
+    let ores = place_ores(c, def, seed, pos, &mut blocks, &biomes, uniform);
+    let built = place_structures(c, def, seed, pos, &mut blocks);
+    let mut cube = if uniform && !ores && !built { Cube::uniform(blocks[0], 0) } else { Cube::from_states(blocks.as_slice().try_into().unwrap()) };
     if biomes.iter().any(|&b| b != 0) {
         cube.biomes = Some(Box::new(biomes));
     }
@@ -183,15 +199,30 @@ use weft_noise::hash;
 
 /// Veins start in this and the 26 neighboring cubes and wander a block per step, so the result
 /// does not depend on which cube is generated first.
-fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256]) {
+/// Returns whether any went in. `uniform`: the cube is all one state.
+fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256], uniform: bool) -> bool {
     let o = pos * 16;
-    let air = c.states[AIR as usize].block;
-    if blocks.iter().all(|&b| b == AIR) && def.ores.iter().all(|ore| ore.replace.binary_search(&air).is_err()) {
-        return;
+    let mut placed = false;
+    // The states in the cube: a vein has nothing to do where it could replace none of them
+    // (air and water, the most of what is generated), and a look costs far less than its veins.
+    let mut present: Vec<u32> = vec![blocks[0]];
+    if !uniform {
+        let mut last = blocks[0];
+        for &b in blocks.iter() {
+            if b != last {
+                last = b;
+                if !present.contains(&b) {
+                    present.push(b);
+                }
+            }
+        }
     }
     for ore in &def.ores {
         let reach = ore.size as i32;
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
+            continue;
+        }
+        if !present.iter().any(|&s| ore.replace.binary_search(&c.states[s as usize].block).is_ok()) {
             continue;
         }
         for nz in pos.z - 1..=pos.z + 1 {
@@ -214,6 +245,7 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
                                 let biome_ok = ore.biome.is_none_or(|t| c.components.has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t));
                                 if biome_ok && ore.replace.binary_search(&c.states[blocks[i] as usize].block).is_ok() {
                                     blocks[i] = ore.state;
+                                    placed = true;
                                 }
                             }
                         }
@@ -221,7 +253,11 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
                 }
             }
         }
+        if placed && !present.contains(&ore.state) {
+            present.push(ore.state);
+        }
     }
+    placed
 }
 
 /// Where structure `s` stands in its grid cell (`cell` x, z), if it does there: its lowest
@@ -338,8 +374,10 @@ pub fn scattered_near(def: &crate::content::DimensionDef, c: &Content, seed: u64
 }
 
 /// Structure blocks that fall into this cube.
-fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) {
+/// Returns whether it put anything in.
+fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
     let o = pos * 16;
+    let mut built = false;
     for s in &def.structures {
         let cells = |lo: i32, size: i32| (lo - size).div_euclid(s.spacing)..=(lo + 15).div_euclid(s.spacing);
         for cz in cells(o.z, s.extent.z) {
@@ -352,11 +390,13 @@ fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, 
                     let l = a + off - o;
                     if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                         blocks[(l.y * 256 + l.z * 16 + l.x) as usize] = state;
+                        built = true;
                     }
                 }
             }
         }
     }
+    built
 }
 
 /// Appends a timer: fire time, event name and value, as the `TIMERS` component keeps them.
@@ -393,6 +433,12 @@ pub fn see_through(c: &Content, cube: &Cube) -> u16 {
 
 /// Seconds to break `state` holding `tool` (item id, 0 = hand); vanilla's slower rate without
 /// a tool that harvests it.
+/// Seconds it takes a player to mine a block, as client and server agree: vanilla's five times as
+/// slow with the head in a liquid, and again off the ground.
+pub fn mining_time(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground: bool, speed: f32) -> f32 {
+    break_time(c, state, tool) * if head_wet { 5.0 } else { 1.0 } * if on_ground { 1.0 } else { 5.0 } / speed
+}
+
 pub fn break_time(c: &Content, state: u32, tool: u32) -> f32 {
     let s = &c.states[state as usize];
     if s.hardness < 0.0 {
@@ -400,6 +446,16 @@ pub fn break_time(c: &Content, state: u32, tool: u32) -> f32 {
     }
     let speed = if c.tool_fits(state, tool) { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
     s.hardness * if c.harvests(state, tool) { 1.5 } else { 5.0 } / speed
+}
+
+/// What an entity's move brought on it, applied after the parallel part.
+#[derive(Clone, Copy)]
+struct TickHit {
+    id: u64,
+    land: Option<f32>,
+    burn: bool,
+    hot: bool,
+    crushed: bool,
 }
 
 impl Dim {
@@ -441,6 +497,10 @@ impl Dim {
             seed,
             cubes: FxHashMap::default(),
             time: 1000,
+            day_offset: 0,
+            raining: false,
+            thunder: false,
+            on_disk: Default::default(),
             rng: Rng(weft_noise::mix(seed ^ id as u64)),
             scheduled: BinaryHeap::new(),
             growth: FxHashMap::default(),
@@ -599,7 +659,8 @@ impl Dim {
             let grows = cube.palette().iter().any(|&s| c.lives(s));
             grew |= grows;
             let modified = self.modified.remove(&pos);
-            if modified || !inside.is_empty() {
+            let on_disk = self.on_disk.remove(&pos);
+            if modified || on_disk || !inside.is_empty() || !self.ticks_in(pos).is_empty() {
                 if grows {
                     Arc::make_mut(&mut cube).ticked = self.time;
                 }
@@ -626,8 +687,9 @@ impl Dim {
         self.daylight_at(c, self.time)
     }
 
+    /// `time` by the tick counter: the sky is that plus what `/time` moved it by.
     pub fn daylight_at(&self, c: &Content, time: u64) -> f32 {
-        c.dims[self.id as usize].daylight(time)
+        c.dims[self.id as usize].daylight(time.saturating_add_signed(self.day_offset))
     }
 
     /// Writes a block, relights, records the change for clients, queues neighbor updates and keeps
@@ -794,8 +856,12 @@ impl Dim {
             if state == 0 {
                 continue;
             }
-            let free = self.get(p).is_some_and(|s| c.states[s as usize].flags & bf::REPLACEABLE != 0 || s == AIR);
+            let under = self.get(p);
+            let free = under.is_some_and(|s| c.states[s as usize].flags & bf::REPLACEABLE != 0 || s == AIR);
             if ground && free && self.supported(c, p, state) {
+                if let Some(s) = under.filter(|&s| s != AIR && c.states[s as usize].liquid.is_none()) {
+                    self.drop_block_loot(c, p, s, ItemStack::EMPTY, false, None);
+                }
                 self.set(c, p, state);
             } else {
                 self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, None);
@@ -852,19 +918,72 @@ impl Dim {
         } else {
             c.components.id(abi::comp::ATTACK_DAMAGE).and_then(|id| c.components.get::<f32>(crate::components::ENTITY, kind, id)).unwrap_or(1.0)
         };
-        if let Some(e) = self.entities.get_mut(attacker).filter(|e| !e.player) {
-            e.attack_cooldown = 20;
+        if !player {
+            // A second a hit unless its kind says otherwise.
+            let own = c.ids.attack_speed.and_then(|id| c.components.get::<f32>(crate::components::ENTITY, kind, id)).unwrap_or(1.0);
+            let per_second = own * self.attribute(c, attacker, super::extend::ATTACK_SPEED, false) as f32;
+            if let Some(e) = self.entities.get_mut(attacker) {
+                e.attack_cooldown = (crate::world::TPS as f32 / per_second.max(0.05)) as _;
+            }
         }
+        self.events.push(DimEvent::EntitySwing { id: attacker });
         let dmg = self.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
-        self.damage(c, target, dmg, attacker, damage::ATTACK)
+        if !player {
+            return self.damage(c, target, dmg, attacker, damage::ATTACK);
+        }
+        // Modern's swing: charged by time since the last, and only a full one crits or knocks.
+        let strength = self.swing_strength(c, attacker, held);
+        let Some(me) = self.entities.get_mut(attacker) else { return false };
+        me.swing_ticks = 0;
+        let full = strength > 0.9;
+        let (sprinting, pos) = (me.sprinting, me.pos);
+        let climbing = self.get(pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & bf::CLIMBABLE != 0);
+        let Some(me) = self.entities.get(attacker) else { return false };
+        let crit = full && me.fall > 0.0 && !me.on_ground && !me.in_liquid && !climbing && !sprinting;
+        let dmg = dmg * (0.2 + strength * strength * 0.8) * if crit { 1.5 } else { 1.0 };
+        let hit = self.damage(c, target, dmg, attacker, damage::ATTACK);
+        if hit && crit {
+            if let Some(t) = self.entities.get(target) {
+                let (pos, id) = (t.pos + DVec3::Y * (t.dims(c).1 * 0.5), self.id);
+                self.events.push(DimEvent::Particles { dim: id, burst: abi::ParticleBurst { kind: c.game.particle_names.get(abi::particle::CRIT).copied().unwrap_or(0), pos: pos.to_array(), count: 16, spread: [0.3, 0.5, 0.3], speed: 3.0, ..abi::ParticleBurst::DEFAULT } });
+            }
+        }
+        if hit && full && sprinting {
+            // A sprint's hit knocks further, and ends the sprint.
+            let away = (self.entities.get(target).map_or(pos, |t| t.pos) - pos).with_y(0.0).normalize_or_zero();
+            self.push(target, away * 10.0 + DVec3::Y * 2.0);
+            if let Some(me) = self.entities.get_mut(attacker) {
+                me.sprinting = false;
+            }
+            self.events.push(DimEvent::StopSprint { player: attacker });
+        }
+        // Standing still with a sword, a full swing also sweeps what stands next to the target.
+        let sweeps = c.ids.sweeps.is_some_and(|id| held.item != 0 && c.components.has(crate::components::ITEM, held.item, id));
+        let on_ground = self.entities.get(attacker).is_some_and(|e| e.on_ground);
+        if hit && full && sweeps && on_ground && !sprinting && !crit {
+            let center = self.entities.get(target).map_or(pos, |t| t.pos);
+            let near: Vec<u64> = self.entities.list.iter().filter(|e| e.is_body(c) && e.id != attacker && e.id != target && (e.pos - center).length_squared() <= 2.0 && (e.pos - pos).length_squared() <= 9.0).map(|e| e.id).collect();
+            for id in near {
+                self.damage(c, id, 1.0, attacker, damage::ATTACK);
+            }
+        }
+        hit
+    }
+
+    /// How charged a player's next swing is, 0..1.
+    pub fn swing_strength(&self, c: &Content, player: u64, held: ItemStack) -> f32 {
+        let Some(e) = self.entities.get(player) else { return 1.0 };
+        crate::content::swing_charge(c, held.item, e.swing_ticks as f32, self.attribute(c, player, super::extend::ATTACK_SPEED, false) as f32)
     }
 
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
-        if ((k.is(ef::INVULNERABLE) || e.mode.invulnerable()) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
+        // The void gets through everything, or /kill would silently fail.
+        if !e.alive() || (cause != damage::VOID && (k.is(ef::INVULNERABLE) || e.mode.invulnerable())) {
             return false;
         }
+        let recovering = e.hurt_cooldown > 0 && cause != damage::VOID;
         // One path: the `HURT` veto, the `DAMAGE` chain, then the `ENTITY_HURT` event.
         let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
         if !self.ask(c, abi::question::HURT, &mut q) {
@@ -874,19 +993,33 @@ impl Dim {
         if crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug) {
             log::debug!(target: "modifiers", "{}", super::extend::explanation());
         }
-        if amount <= 0.0 {
+        // While recovering only what goes beyond the last hit lands, and it doesn't knock.
+        let last = self.entities.get(id).map_or(0.0, |e| e.last_hurt);
+        let landing = if recovering { amount - last } else { amount };
+        if landing <= 0.0 {
             return false;
         }
+        let amount = landing;
         self.emit_engine(c, abi::event::ENTITY_HURT, &abi::Hurt { entity: id, source, amount, cause });
-        let knock = self.entities.get(source).map(|s| s.pos);
+        let knock = self.entities.get(source).filter(|_| !recovering).map(|s| s.pos);
         let Some(e) = self.entities.get_mut(id) else { return false };
-        e.health -= amount;
-        e.hurt_cooldown = 10;
+        e.health = (e.health - amount).max(0.0);
+        e.last_hurt = if recovering { last + amount } else { amount };
+        if !recovering {
+            e.hurt_cooldown = 10;
+        }
         let mut knocked: Option<[f32; 2]> = None;
         if let Some(from) = knock {
             let d = (e.pos - from).with_y(0.0).normalize_or_zero();
-            e.vel += d * 6.0 + DVec3::Y * 5.0;
-            knocked = e.player.then(|| [(from.x - e.pos.x) as f32, (from.z - e.pos.z) as f32]);
+            if e.player {
+                knocked = Some([(from.x - e.pos.x) as f32, (from.z - e.pos.z) as f32]);
+            } else {
+                // Vanilla's knockBack, in blocks per second: half the speed plus 0.4 per tick away
+                // and up, never more than that up.
+                let (vx, vz) = (e.vel.x * 0.5 + d.x * 8.0, e.vel.z * 0.5 + d.z * 8.0);
+                let vy = if e.on_ground { (e.vel.y * 0.5 + 8.0).min(8.0) } else { e.vel.y };
+                e.vel = DVec3::new(vx, vy, vz);
+            }
         }
         let (health, player, pos, kind, on_fire) = (e.health, e.player, e.pos, e.kind, e.fire > 0);
         let sounds = k.sounds;
@@ -905,27 +1038,71 @@ impl Dim {
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
                 let tool = self.entities.get(source).filter(|s| s.player).and_then(|s| self.entities.inventories.get(&source).and_then(|i| i.get(s.selected as usize)).copied()).unwrap_or_default();
-                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA, mined: 0 };
+                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA, mined: 0, state: 0 };
                 for s in self.roll_loot(c, &k.name, &ctx) {
                     self.spawn_item(c, pos + DVec3::Y * 0.5, s);
                 }
             }
             if player {
-                if let Some(items) = self.entities.inventories.get(&id).cloned() {
-                    let pos = self.entities.get(id).map_or(DVec3::ZERO, |e| e.pos);
-                    for (i, s) in items.into_iter().enumerate() {
-                        if !s.is_empty() {
-                            self.spawn_item(c, pos + DVec3::Y, s);
-                            self.entities.set_slot(id, i as u32, ItemStack::EMPTY);
-                        }
-                    }
-                }
-                self.events.push(DimEvent::Died { player: id });
+                let killer = self.entities.get(source).map(|s| s.kind);
+                self.events.push(DimEvent::Died { player: id, cause, killer });
             } else {
                 self.entities.remove(id);
             }
         }
         true
+    }
+
+    /// A head stuck in a solid block: vanilla's 1 damage, with the usual pause between hits.
+    fn suffocate(&mut self, c: &'static Content) {
+        if self.time % 10 != 0 {
+            return;
+        }
+        let stuck: Vec<u64> = self
+            .entities
+            .list
+            .iter()
+            .filter(|e| e.is_body(c) && !e.flying)
+            .filter(|e| {
+                let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
+                self.get(head).is_some_and(|s| c.states[s as usize].flags & bf::SOLID != 0 && c.tight[s as usize].opacity >= 15)
+            })
+            .map(|e| e.id)
+            .collect();
+        for id in stuck {
+            self.damage(c, id, 1.0, 0, damage::SUFFOCATE);
+        }
+    }
+
+    /// Far below the world's floor: vanilla's 4 damage, 64 blocks under it.
+    fn fall_into_void(&mut self, c: &'static Content) {
+        let floor = c.dims[self.id as usize].min_cube_y;
+        if self.time % 10 != 0 || floor == i32::MIN {
+            return;
+        }
+        let limit = (floor * 16 - 64) as f64;
+        let falling: Vec<u64> = self.entities.list.iter().filter(|e| !e.removed && e.pos.y < limit && e.mode != crate::world::GameMode::Spectator && e.anchor.is_none() && e.kind != c.game.virtual_kind).map(|e| e.id).collect();
+        for id in falling {
+            self.damage(c, id, 4.0, 0, damage::VOID);
+        }
+    }
+
+    /// What a dead player carried falls where it died.
+    pub fn drop_inventory(&mut self, c: &Content, id: u64) {
+        let Some(items) = self.entities.inventories.get(&id).cloned() else { return };
+        let pos = self.entities.get(id).map_or(DVec3::ZERO, |e| e.pos);
+        for (i, s) in items.into_iter().enumerate() {
+            if !s.is_empty() {
+                let item = self.spawn_item(c, pos + DVec3::Y, s);
+                // Vanilla's: flung out in a random direction, and not to be grabbed back at once.
+                let (a, f) = (self.random() as f64 / u64::MAX as f64 * std::f64::consts::TAU, self.random() as f64 / u64::MAX as f64 * 10.0);
+                if let Some(e) = self.entities.get_mut(item) {
+                    e.vel = DVec3::new(a.cos() * f, 4.0, a.sin() * f);
+                    e.pickup_delay = 40;
+                }
+                self.entities.set_slot(id, i as u32, ItemStack::EMPTY);
+            }
+        }
     }
 
     pub fn tick(&mut self, c: &'static Content) {
@@ -959,6 +1136,8 @@ impl Dim {
             self.grow(c);
         }
 
+        self.fall_into_void(c);
+        self.suffocate(c);
         self.natural_spawns(c);
         self.tick_entities(c);
         self.tick_structures(c);
@@ -1057,7 +1236,7 @@ impl Dim {
         }
         let cats = &c.game.categories;
         let daylight = self.daylight(c);
-        let players: Vec<DVec3> = self.entities.list.iter().filter(|e| e.player && !e.removed && e.health > 0.0).map(|e| e.pos).collect();
+        let players: Vec<DVec3> = self.entities.list.iter().filter(|e| e.player && !e.removed && e.alive()).map(|e| e.pos).collect();
         for p in players {
             let mut count = vec![0u32; cats.len()];
             for e in self.entities.list.iter().filter(|e| !e.removed && !e.player && e.item.is_empty() && (e.pos - p).length_squared() < 64.0 * 64.0) {
@@ -1147,7 +1326,7 @@ impl Dim {
         // Mod logic: one call per kind and callback with every entity of that kind.
         let mut by_kind: FxHashMap<u32, Vec<u64>> = FxHashMap::default();
         for e in &self.entities.list {
-            if !e.removed && (!e.player || e.health > 0.0) {
+            if !e.removed && (!e.player || e.alive()) {
                 by_kind.entry(e.kind).or_default().push(e.id);
             }
         }
@@ -1170,6 +1349,7 @@ impl Dim {
 
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
+        let raining = self.raining;
         let players: Vec<DVec3> = self.entities.list.iter().filter(|e| e.player && !e.removed).map(|e| e.pos).collect();
         let cubes = &self.cubes;
         let block = |p: IVec3| cubes.get(&cube_of(p)).map(|cb| cb.get(local_index(p)));
@@ -1193,7 +1373,7 @@ impl Dim {
         let bodies = &bodies;
         // Physics only reads blocks and bodies and writes its own entity, so entities move in
         // parallel; damage is applied afterwards in list order to stay deterministic.
-        let hits: Vec<(u64, Option<f32>, bool, bool, bool)> = self
+        let hits: Vec<TickHit> = self
             .entities
             .list
             .par_iter_mut()
@@ -1204,8 +1384,9 @@ impl Dim {
                 }
                 e.age += 1;
                 e.hurt_cooldown = e.hurt_cooldown.saturating_sub(1);
+                e.swing_ticks = e.swing_ticks.saturating_add(1);
                 e.attack_cooldown = e.attack_cooldown.saturating_sub(1);
-                if e.player && (e.health <= 0.0 || e.mode == crate::world::GameMode::Spectator) {
+                if e.player && (!e.alive() || e.mode == crate::world::GameMode::Spectator) {
                     return None;
                 }
                 let k = &c.game.entities[e.kind as usize];
@@ -1215,11 +1396,7 @@ impl Dim {
                 if !e.player && !k.is(ef::SOLID) {
                     let s = step(c, e, gravity, &block, bodies);
                     crushed = s.crushed;
-                    if let Some(fall) = s.land {
-                        if k.is(ef::FALL_DAMAGE) && fall > super::entity::SAFE_FALL {
-                            land = Some(fall - super::entity::SAFE_FALL);
-                        }
-                    }
+                    land = s.land.and_then(|fall| super::entity::fall_damage(k, fall));
                 }
                 // Liquid temperatures where the entity is now (`in_liquid` is from before the move).
                 let temps = [e.pos, e.pos + DVec3::Y * (k.height as f64 * 0.5)]
@@ -1231,7 +1408,7 @@ impl Dim {
                     e.fire = e.fire.max(300);
                 }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
-                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
+                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !raining && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * k.eye as f64).floor().as_ivec3();
                     let sky = cubes.get(&cube_of(head)).map_or(0, |cb| cb.light(local_index(head)) & 0xFF);
                     if sky >= 15 {
@@ -1256,13 +1433,13 @@ impl Dim {
                         e.removed = true;
                     }
                 }
-                (land.is_some() || burn || hot || crushed).then_some((e.id, land, burn, hot, crushed))
+                (land.is_some() || burn || hot || crushed).then_some(TickHit { id: e.id, land, burn, hot, crushed })
             })
             .collect();
         for (i, push) in super::entity::soft_push(c, &self.entities.list) {
             self.entities.list[i].vel += push;
         }
-        for &(id, land, burn, hot, crushed) in &hits {
+        for &TickHit { id, land, burn, hot, crushed } in &hits {
             if let Some(amount) = land {
                 self.damage(c, id, amount, 0, damage::FALL);
             }
@@ -1357,7 +1534,16 @@ impl Dim {
     /// Item entities: merge neighbors, get picked up by players.
     fn items(&mut self, c: &'static Content) {
         let players: Vec<(u64, DVec3)> =
-            self.entities.list.iter().filter(|e| e.player && !e.removed && e.health > 0.0 && e.mode != crate::world::GameMode::Spectator).map(|e| (e.id, e.pos)).collect();
+            self.entities.list.iter().filter(|e| e.player && !e.removed && e.alive() && e.mode != crate::world::GameMode::Spectator).map(|e| (e.id, e.pos)).collect();
+        // Who is next to whom, once a merge is due: everyone asking everyone was the one thing
+        // that took a tick over its time with thousands of items lying around.
+        let merging = self.time % 10 == 0;
+        let mut cells: FxHashMap<IVec3, Vec<usize>> = FxHashMap::default();
+        if merging {
+            for (i, e) in self.entities.list.iter().enumerate().filter(|(_, e)| !e.removed && !e.item.is_empty()) {
+                cells.entry(e.pos.floor().as_ivec3()).or_default().push(i);
+            }
+        }
         let items: Vec<(u64, DVec3)> = self.entities.list.iter().filter(|e| !e.removed && !e.item.is_empty()).map(|e| (e.id, e.pos)).collect();
         for (id, pos) in items {
             let Some(e) = self.entities.get(id) else { continue };
@@ -1365,7 +1551,9 @@ impl Dim {
                 continue;
             }
             let stack = e.item;
-            if let Some(&(pid, _)) = players.iter().find(|(_, pp)| (*pp + DVec3::Y * 0.5 - pos).length_squared() < 2.25) {
+            // The nearest one that has room, not just the first in reach.
+            let takers = players.iter().filter(|(_, pp)| (*pp + DVec3::Y * 0.5 - pos).length_squared() < 2.25);
+            if let Some(&(pid, _)) = takers.filter(|(p, _)| self.entities.can_insert(c, *p, stack)).min_by(|a, b| (a.1 - pos).length_squared().total_cmp(&(b.1 - pos).length_squared())) {
                 let mut q = abi::Query { entity: pid, other: id, item: stack.item, amount: stack.count as f64, ..abi::Query::DEFAULT };
                 if !self.ask(c, abi::question::PICKUP_ITEM, &mut q) {
                     continue;
@@ -1387,16 +1575,17 @@ impl Dim {
                 }
                 continue;
             }
-            if self.time % 10 == 0 {
+            if merging {
                 let max = c.max_stack(stack.item);
-                let other = self.entities.list.iter().position(|o| {
-                    o.id != id
-                        && !o.removed
-                        && o.item.item == stack.item
-                        && o.item.data == stack.data
-                        && o.item.count + stack.count <= max
-                        && (o.pos - pos).length_squared() < 1.0
-                });
+                let at = pos.floor().as_ivec3();
+                let list = &self.entities.list;
+                let other = (-1..=1)
+                    .flat_map(|dx| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| at + IVec3::new(dx, dy, dz))))
+                    .flat_map(|cell| cells.get(&cell).into_iter().flatten().copied())
+                    .find(|&i| {
+                        let o = &list[i];
+                        o.id != id && !o.removed && o.item.item == stack.item && o.item.data == stack.data && o.item.count + stack.count <= max && (o.pos - pos).length_squared() < 1.0
+                    });
                 if let Some(oi) = other {
                     self.entities.list[oi].item.count += stack.count;
                     if let Some(e) = self.entities.get_mut(id) {
@@ -1482,9 +1671,50 @@ impl Dim {
             }
         }
         if !self.resend.is_empty() {
+            // Taken now, not when the light changed: finish_tick runs after every message, and
+            // the block changes dropped below must be in what is sent.
+            for (cp, cube) in &mut self.resend {
+                if let Some(now) = self.cubes.get(cp) {
+                    *cube = now.clone();
+                }
+            }
             let resent: FxHashSet<IVec3> = self.resend.iter().map(|r| r.0).collect();
             self.changes.retain(|(p, _)| !resent.contains(&cube_of(*p)));
         }
+    }
+
+    /// What `question::BREAK_BLOCK` says about it.
+    pub fn may_break(&mut self, c: &'static Content, p: IVec3, item: u32, player: u64) -> bool {
+        let Some(state) = self.get(p) else { return true };
+        let mut q = abi::Query { entity: player, pos: p.to_array(), state, item, ..abi::Query::DEFAULT };
+        self.ask(c, abi::question::BREAK_BLOCK, &mut q)
+    }
+
+    /// The surface of a liquid counts, not only the block it is in.
+    pub fn head_in_liquid(&self, c: &Content, e: &super::entity::Entity) -> bool {
+        crate::physics::liquid_at(c, &|p| self.get(p), e.pos + DVec3::Y * e.eye(c)).is_some()
+    }
+
+    /// Pushes an entity, by blocks per second. Its client moves a player, so the push goes there.
+    pub fn push(&mut self, id: u64, v: DVec3) {
+        let Some(e) = self.entities.get_mut(id) else { return };
+        if e.player {
+            let t = v / crate::world::TPS as f64;
+            self.entities.pushed.push((id, ([t.x as f32, t.y as f32, t.z as f32], false)));
+        } else {
+            e.vel += v;
+        }
+    }
+
+    /// One melee hit, with what a player holds, which wears from it. Mobs hit with their kind's damage.
+    pub fn melee(&mut self, c: &'static Content, attacker: u64, target: u64) -> bool {
+        let Some((player, slot)) = self.entities.get(attacker).map(|e| (e.player, e.selected)) else { return false };
+        let held = if player { self.entities.held(attacker) } else { ItemStack::EMPTY };
+        let hit = self.attack(c, attacker, target, held);
+        if hit && player {
+            super::actions::wear(c, self, attacker, slot, c.item_value::<u32>(held.item, c.ids.wear_per_hit).unwrap_or(2));
+        }
+        hit
     }
 
     /// Breaks a block as if mined with `tool`: asks interceptors, rolls its loot (if `drops`),
@@ -1494,8 +1724,7 @@ impl Dim {
         if state == AIR || c.states[state as usize].hardness < 0.0 {
             return false;
         }
-        let mut q = abi::Query { entity: player, pos: p.to_array(), state, item: tool.item, ..abi::Query::DEFAULT };
-        if !self.ask(c, abi::question::BREAK_BLOCK, &mut q) {
+        if !self.may_break(c, p, tool.item, player) {
             return false;
         }
         // The block entity's own name goes back onto the block's item.
@@ -1529,9 +1758,23 @@ impl Dim {
         if !self.supported(c, p, chosen) {
             return false;
         }
+        // Not into anyone standing there.
+        if c.states[chosen as usize].flags & bf::SOLID != 0 {
+            let block_box = crate::physics::Aabb { min: p.as_dvec3(), max: p.as_dvec3() + DVec3::ONE };
+            let taken = self.entities.list.iter().any(|e| e.is_body(c) && e.aabb(c).intersects(&block_box));
+            if taken {
+                return false;
+            }
+        }
         let mut q = abi::Query { entity: player, pos: p.to_array(), state: chosen, item, ..abi::Query::DEFAULT };
         if !self.ask(c, abi::question::PLACE_BLOCK, &mut q) {
             return false;
+        }
+        // What it replaces (a flower, tall grass) drops what it would when broken, unlike vanilla,
+        // where it is lost or in the way. Creative loses it, as when breaking.
+        let creative = self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+        if !creative && cur != AIR && c.states[cur as usize].liquid.is_none() {
+            self.drop_block_loot(c, p, cur, ItemStack::EMPTY, false, None);
         }
         self.set(c, p, chosen);
         self.sound(c.states[chosen as usize].sounds[1], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
@@ -1694,6 +1937,30 @@ impl Dim {
         }
     }
 
+    /// Block ticks waiting in a cube: (position in the cube, ticks left).
+    pub fn ticks_in(&self, cube: IVec3) -> Vec<(u16, u32)> {
+        let base = cube * 16;
+        let mut out: Vec<(u16, u32)> = self
+            .scheduled
+            .iter()
+            .filter_map(|Reverse((at, x, y, z))| {
+                let l = IVec3::new(*x, *y, *z) - base;
+                ((0..16).contains(&l.x) && (0..16).contains(&l.y) && (0..16).contains(&l.z)).then(|| ((l.x | l.y << 4 | l.z << 8) as u16, at.saturating_sub(self.time).max(1) as u32))
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The ticks a saved cube was still waiting for.
+    pub fn restore_ticks(&mut self, cube: IVec3, ticks: &[(u16, u32)]) {
+        for &(at, left) in ticks {
+            let at = at as i32;
+            self.schedule(cube * 16 + IVec3::new(at & 15, (at >> 4) & 15, (at >> 8) & 15), left);
+        }
+    }
+
     pub fn schedule(&mut self, p: IVec3, delay: u32) {
         let at = self.time + delay.max(1) as u64;
         self.scheduled.push(Reverse((at, p.x, p.y, p.z)));
@@ -1729,7 +1996,7 @@ impl Dim {
     pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, mined: bool, own_name: Option<&str>) {
         let b = c.block_of(state);
         let own_item = c.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32);
-        for s in self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, mined: if mined { state } else { 0 }, ..Default::default() }) {
+        for s in self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, mined: if mined { state } else { 0 }, state, ..Default::default() }) {
             let s = if Some(s.item) == own_item { crate::stack::with_name(s, own_name) } else { s };
             self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
         }
@@ -1753,6 +2020,11 @@ type Taken = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
 #[derive(Default)]
 pub struct Parcel {
     cubes: Vec<(IVec3, Arc<Cube>, bool, bool)>,
+    on_disk: Vec<IVec3>,
+    newly_settled: Vec<IVec3>,
+    edge_updates: Vec<IVec3>,
+    light_dirty: Vec<IVec3>,
+    edited: Vec<IVec3>,
     entities: Vec<Taken>,
     structures: Vec<(u64, Box<Dim>)>,
     scheduled: Vec<Reverse<(u64, i32, i32, i32)>>,
@@ -1793,6 +2065,22 @@ impl Dim {
             self.grid.cube_unloaded(pos);
             self.conn.remove(&pos);
             p.cubes.push((pos, cube, self.modified.remove(&pos), self.settled.remove(&pos)));
+            if self.on_disk.remove(&pos) {
+                p.on_disk.push(pos);
+            }
+        }
+        // What was waiting on these cubes goes with them.
+        p.newly_settled = self.newly_settled.extract_if(.., |q| take(section_of_cube(*q))).collect();
+        let (moved, kept): (Vec<IVec3>, Vec<IVec3>) = self.edge_updates.drain(..).partition(|q| take(section_of_cube(cube_of(*q))));
+        p.edge_updates = moved;
+        self.edge_updates.extend(kept);
+        p.light_dirty = self.light_dirty.iter().copied().filter(|q| take(section_of_cube(*q))).collect();
+        for q in &p.light_dirty {
+            self.light_dirty.remove(q);
+        }
+        p.edited = self.edited.iter().copied().filter(|q| take(section_of_cube(*q))).collect();
+        for q in &p.edited {
+            self.edited.remove(q);
         }
         let ids: Vec<u64> = self.entities.list.iter().filter(|e| take(section_of(e.pos))).map(|e| e.id).collect();
         for id in ids {
@@ -1816,6 +2104,11 @@ impl Dim {
     }
 
     pub fn absorb(&mut self, c: &Content, p: Parcel) {
+        self.on_disk.extend(p.on_disk);
+        self.newly_settled.extend(p.newly_settled);
+        self.edge_updates.extend(p.edge_updates);
+        self.light_dirty.extend(p.light_dirty);
+        self.edited.extend(p.edited);
         for (pos, cube, modified, settled) in p.cubes {
             self.grid.cube_loaded(c, pos, &cube);
             self.add_cube(pos, cube);

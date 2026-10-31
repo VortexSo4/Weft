@@ -91,9 +91,4 @@ impl Look {
         }
         self.color(&format!("{class}_shadow")).or_else(|| self.color("default_shadow"))
     }
-
-    /// A named color (`color.<name>`), for what the engine draws itself.
-    pub fn named(&self, name: &str, default: u32) -> u32 {
-        self.color(name).unwrap_or(default)
-    }
 }

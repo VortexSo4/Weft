@@ -95,10 +95,6 @@ impl Lang {
         self.entries.contains_key(key) || self.fallback.contains_key(key)
     }
 
-    pub fn is_missing_in_current(&self, key: &str) -> bool {
-        self.code != FALLBACK && !self.entries.contains_key(key)
-    }
-
     /// (code, display name) for every language any mod ships, reading only the first line.
     pub fn available(assets: &Assets) -> Vec<(String, String)> {
         let mut out: FxHashMap<String, String> = FxHashMap::default();

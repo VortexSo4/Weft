@@ -41,7 +41,7 @@ pub struct Entity {
     /// Hotbar slot the player holds.
     pub selected: u32,
     pub anchor: Option<IVec3>,
-    pub sent: Option<(DVec3, f32, f32, bool)>,
+    pub sent: Option<(DVec3, f32, f32, crate::world::Pose)>,
     /// Worn items as last sent to clients.
     pub worn: Vec<u32>,
     /// The solid body it rides (stands on, or flies above within its carry height).
@@ -52,7 +52,19 @@ pub struct Entity {
     /// Falling blocks: ticks it has lain on the ground.
     pub rested: u8,
     /// Crouching players: a 1.5 high box with lower eyes.
-    pub crouched: bool,
+    pub pose: crate::world::Pose,
+    /// Sprinting, as its client says (players).
+    pub sprinting: bool,
+    /// What a player may do (`abi::permission`).
+    pub permission: u32,
+    /// Flying, as its client says.
+    pub flying: bool,
+    /// Left the ground by jumping this tick.
+    pub jumped: bool,
+    /// Ticks since it last swung or changed items (players): what a hit's strength is judged by.
+    pub swing_ticks: u32,
+    /// What its last hit did while `hurt_cooldown` runs: a stronger one only adds the difference.
+    pub last_hurt: f32,
     /// Where it walks to by itself (`Host::navigate`).
     pub nav: Option<super::path::Nav>,
 }
@@ -91,9 +103,21 @@ impl Entity {
             size: None,
             look: None,
             rested: 0,
-            crouched: false,
+            pose: Default::default(),
+            sprinting: false,
+            permission: 0,
+            flying: false,
+            jumped: false,
+            swing_ticks: u32::MAX / 2,
+            last_hurt: 0.0,
             nav: None,
         }
+    }
+
+    /// Health never goes below 0 and nothing raises it from there but a respawn, so this is the
+    /// one question of being dead.
+    pub fn alive(&self) -> bool {
+        self.health > 0.0
     }
 
     /// Half width, height and eye height of its box: its own size if a mod gave it one, else
@@ -101,7 +125,7 @@ impl Entity {
     pub fn dims(&self, c: &Content) -> (f64, f64, f64) {
         let k = &c.game.entities[self.kind as usize];
         let [w, h, eye] = self.size.unwrap_or([k.width, k.height, k.eye]).map(|v| v as f64);
-        let (h, eye) = if self.crouched { physics::crouched(h, eye) } else { (h, eye) };
+        let (h, eye) = physics::posed(self.pose, h, eye);
         (w / 2.0, h, eye)
     }
 
@@ -124,17 +148,27 @@ impl Entity {
         self.pos + DVec3::Y * (self.eye(c) - 0.3)
     }
 
+    /// Something that stands in the world and can be hit: not a dropped item, a block's entity or
+    /// a spectator.
+    pub fn is_body(&self, c: &Content) -> bool {
+        !self.removed && self.item.is_empty() && self.anchor.is_none() && self.kind != c.game.virtual_kind && self.mode != crate::world::GameMode::Spectator
+    }
+
     pub fn state(&self, c: &Content, max_health: f32) -> weft_abi::EntityState {
         let k = &c.game.entities[self.kind as usize];
         weft_abi::EntityState {
             kind: self.kind,
             flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
+            pose: self.pose as u32,
+            flying: self.flying as u32,
             pos: self.pos.to_array(),
             vel: self.vel.to_array(),
             yaw: self.yaw,
             pitch: self.pitch,
             on_ground: self.on_ground as u32,
             in_liquid: self.in_liquid as u32,
+            sprinting: self.sprinting as u32,
+            jumped: self.jumped as u32,
             health: self.health,
             max_health,
             age: self.age,
@@ -156,8 +190,6 @@ pub struct Entities {
     /// Synced components as last sent, to find what changed (`find_changes`).
     sent: FxHashMap<(u64, u32), Box<[u8]>>,
     pub anchors: FxHashMap<IVec3, u64>,
-    pub spawned: Vec<u64>,
-    pub despawned: Vec<u64>,
     /// Killed this tick: clients play the death animation when they go.
     pub killed: Vec<u64>,
     /// Item entities picked up whole this tick, and by whom (clients pull them in).
@@ -181,6 +213,11 @@ fn starting_value(c: &Content, kind: &crate::registry::EntityKind, comp: u32) ->
 }
 
 impl Entities {
+    /// What it holds in the selected slot.
+    pub fn held(&self, id: u64) -> weft_abi::ItemStack {
+        self.get(id).and_then(|e| self.inventories.get(&id)?.get(e.selected as usize).copied()).unwrap_or_default()
+    }
+
     pub fn get(&self, id: u64) -> Option<&Entity> {
         self.index.get(&id).map(|&i| &self.list[i]).filter(|e| !e.removed)
     }
@@ -206,7 +243,6 @@ impl Entities {
         }
         self.index.insert(id, self.list.len());
         self.list.push(e);
-        self.spawned.push(id);
     }
 
     /// A new life for an entity that stays, what its kind attaches starts
@@ -255,7 +291,6 @@ impl Entities {
             self.inventories.remove(id);
             self.dirty_inv.remove(id);
         }
-        self.despawned.extend(gone);
     }
 
     /// Marks synced components whose bytes differ from what was last sent, however they changed
@@ -270,15 +305,23 @@ impl Entities {
     }
 
     /// Takes an entity out entirely (moving it to another dimension).
+    /// Whether any of `stack` would fit in its inventory.
+    pub fn can_insert(&self, c: &Content, id: u64, stack: ItemStack) -> bool {
+        self.inventories.get(&id).is_some_and(|inv| inv.iter().any(|s| s.is_empty() || (s.item == stack.item && s.data == stack.data && s.count < c.items.get(stack.item as usize).map_or(64, |i| i.max_stack))))
+    }
+
     pub fn take(&mut self, id: u64) -> Option<(Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>)> {
         let i = *self.index.get(&id)?;
         let e = self.list.remove(i);
         self.index = self.list.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
+        // Its block is the new region's now; here, the place would still count as taken.
+        if let Some(a) = e.anchor {
+            self.anchors.remove(&a);
+        }
         let inv = self.inventories.remove(&id);
         let keys: Vec<(u64, u32)> = self.comps.keys().filter(|k| k.0 == id).copied().collect();
         let comps = keys.into_iter().filter_map(|k| self.comps.remove(&k).map(|v| (k.1, v))).collect();
         self.sent.retain(|k, _| k.0 != id);
-        self.despawned.push(id);
         Some((e, inv, comps))
     }
 
@@ -327,6 +370,11 @@ impl Entities {
         if stack.count == 0 { ItemStack::EMPTY } else { stack }
     }
 
+    /// What can be hit and is alive within `radius`.
+    pub fn near_bodies(&self, c: &Content, pos: DVec3, radius: f64) -> Vec<u64> {
+        self.list.iter().filter(|e| e.is_body(c) && e.alive() && (e.pos - pos).length_squared() <= radius * radius).map(|e| e.id).collect()
+    }
+
     pub fn near(&self, pos: DVec3, radius: f64, kind: u32) -> Vec<u64> {
         let r2 = radius * radius;
         self.list
@@ -335,6 +383,11 @@ impl Entities {
             .map(|e| e.id)
             .collect()
     }
+}
+
+/// What a fall from that high does to a kind, the same for players and mobs.
+pub fn fall_damage(kind: &crate::registry::EntityKind, fell: f32) -> Option<f32> {
+    (kind.is(ef::FALL_DAMAGE) && fell > SAFE_FALL).then(|| fell - SAFE_FALL)
 }
 
 /// What a step did besides moving: the fall it landed from, and whether a crushing body
@@ -346,6 +399,22 @@ pub struct Stepped {
 
 /// One physics step (1/20 s) for a non-player entity. `block` gives states, `None` = unloaded;
 /// `bodies` are the solid bodies that moved this tick before it.
+/// Distance fallen, the same for players and mobs: a fall ends on the ground, and liquids and
+/// ladders take it away. Returns how far it fell when it just landed.
+pub fn track_fall(fall: &mut f32, dy: f64, on_ground: bool, safe: bool) -> Option<f32> {
+    if safe {
+        *fall = 0.0;
+        return None;
+    }
+    if on_ground {
+        return Some(std::mem::take(fall)).filter(|&f| f > 0.0);
+    }
+    if dy < 0.0 {
+        *fall += (-dy) as f32;
+    }
+    None
+}
+
 pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[physics::Body]) -> Stepped {
     const DT: f64 = crate::world::TICK;
     let k = &c.game.entities[e.kind as usize];
@@ -396,7 +465,6 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     e.vel = v / DT;
     e.in_liquid = r.in_liquid;
     e.blocked = r.hit[0] || r.hit[2];
-    let was_ground = e.on_ground;
     e.on_ground = r.on_ground;
     if r.on_ground {
         if let Some(b) = physics::standing_on(c, e.pos, hw, bodies, e.id) {
@@ -405,13 +473,9 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     }
     let dy = e.pos.y - start.y;
     e.moved = ((e.pos.x - start.x).powi(2) + (e.pos.z - start.z).powi(2)).sqrt() as f32;
-    if e.on_ground || e.in_liquid {
-        if !was_ground && e.fall > 0.0 && !e.in_liquid {
-            out.land = Some(e.fall);
-        }
-        e.fall = 0.0;
-    } else if dy < 0.0 {
-        e.fall += (-dy) as f32;
+    let climbing = block(e.pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & weft_abi::block_flags::CLIMBABLE != 0);
+    if let Some(land) = track_fall(&mut e.fall, dy, e.on_ground, e.in_liquid || climbing) {
+        out.land = Some(land);
     }
     out
 }

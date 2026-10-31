@@ -202,6 +202,22 @@ pub struct ItemDef {
 
 /// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
 /// gets automatically for items it put in no tab.
+/// Ticks of holding the use button an item asks for, 0 for at once.
+pub fn use_ticks(c: &Content, item: u32) -> u32 {
+    c.item_value::<u32>(item, c.ids.use_ticks).unwrap_or(0)
+}
+
+/// Full swings per second with an item in hand.
+pub fn swings_per_second(c: &Content, item: u32) -> f32 {
+    c.item_value::<f32>(item, c.ids.attack_speed).unwrap_or(4.0)
+}
+
+/// How charged a swing is after that many ticks, 0..1. Client and server have to agree, with
+/// `speed` the `core:attack_speed` attribute.
+pub fn swing_charge(c: &Content, item: u32, ticks: f32, speed: f32) -> f32 {
+    ((ticks + 0.5) * swings_per_second(c, item) * speed / crate::world::TPS as f32).clamp(0.0, 1.0)
+}
+
 /// A liquid the engine flows (`abi::LiquidDesc`); its block has 16 states.
 pub struct LiquidDef {
     pub name: String,
@@ -213,6 +229,13 @@ pub struct LiquidDef {
     /// Lighter than air: flows up.
     pub rises: bool,
     pub temperature: u32,
+    pub swimmable: bool,
+    /// 0xRRGGBB, `None` for the average of its texture.
+    pub fog_color: Option<u32>,
+    pub fog_distance: f32,
+    /// Asset name, empty for its own texture.
+    pub overlay: String,
+    pub overlay_opacity: f32,
 }
 
 /// A block or any block with a tag.
@@ -274,6 +297,8 @@ pub struct DimensionDef {
     pub terrain: Option<Box<crate::server::terrain::Terrain>>,
     /// `dim_flags::BARE`: only ores, scatters and decorations that name it.
     pub bare: bool,
+    /// `dim_flags::WEATHER`.
+    pub weather: bool,
     /// In name order, placed after `generator`.
     pub scatters: Vec<ScatterDef>,
     /// (mod, callback) run after the generator and scatters, in load order.
@@ -290,7 +315,6 @@ pub struct DimensionDef {
 
 pub struct ScatterDef {
     pub owner: ModId,
-    pub name: String,
     pub cell: i32,
     pub reach: i32,
     /// Biome component (f32) with the chance of a site per cell.
@@ -340,14 +364,21 @@ impl DimensionDef {
         self.terrain.as_ref().and_then(|t| t.sea_level())
     }
 
-    /// Fraction of full daylight (0..1) at world time `time`: a sine over the day, flat at night.
+    /// How far the day has gone around the sky at world time `time`, in turns: 0 the sun rising,
+    /// 0.25 noon, 0.75 midnight. Vanilla's easing: slower than the clock around noon and midnight.
+    pub fn day_turn(&self, time: f64) -> f64 {
+        let (t, len) = if self.day_length == 0 { (self.fixed_time as f64, 24000.0) } else { (time % self.day_length as f64, self.day_length as f64) };
+        let from_noon = (t / len - 0.25).rem_euclid(1.0);
+        let eased = 0.5 - (from_noon * std::f64::consts::PI).cos() / 2.0;
+        (0.25 + (from_noon * 2.0 + eased) / 3.0).rem_euclid(1.0)
+    }
+
+    /// Fraction of full daylight (0..1) at world time `time`, vanilla's curve.
     pub fn daylight(&self, time: u64) -> f32 {
         if !self.sky_light {
             return 0.0;
         }
-        let (t, len) = if self.day_length == 0 { (self.fixed_time as f64, 24000.0) } else { ((time % self.day_length as u64) as f64, self.day_length as f64) };
-        // 0 = sunrise, 0.25 = noon, 0.75 = midnight.
-        ((t / len * std::f64::consts::TAU).sin() * 2.0 + 0.6).clamp(0.0, 1.0) as f32
+        ((self.day_turn(time as f64) * std::f64::consts::TAU).sin() * 2.0 + 0.5).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -410,6 +441,11 @@ pub struct Ids {
     pub worn: Option<u32>,
     pub worn_texture: Option<u32>,
     pub wear_per_hit: Option<u32>,
+    pub attack_speed: Option<u32>,
+    pub use_ticks: Option<u32>,
+    pub sweeps: Option<u32>,
+    pub no_creative_break: Option<u32>,
+    pub snowy: Option<u32>,
 }
 
 /// What lighting and meshing read of a state for every block they pass, packed tight: a
@@ -501,6 +537,11 @@ pub fn item_tint(tint: u8) -> u32 {
 }
 
 impl Content {
+    /// In creative this item doesn't break blocks.
+    pub fn no_creative_break(&self, item: u32) -> bool {
+        self.ids.no_creative_break.is_some_and(|t| self.components.has(comps::ITEM, item, t))
+    }
+
     pub fn block_of(&self, state: u32) -> &BlockDef {
         &self.blocks[self.states[state as usize].block as usize]
     }
@@ -872,6 +913,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 structures: Vec::new(),
                 terrain: None,
                 bare: d.flags & abi::dim_flags::BARE != 0,
+                weather: d.flags & abi::dim_flags::WEATHER != 0,
                 scatters: Vec::new(),
                 decorations: Vec::new(),
                 column_cache: crate::server::terrain::ColumnCache::new(4096),
@@ -913,6 +955,7 @@ fn void_dimension() -> DimensionDef {
         structures: Vec::new(),
         terrain: None,
         bare: true,
+        weather: false,
         scatters: Vec::new(),
         decorations: Vec::new(),
         column_cache: crate::server::terrain::ColumnCache::new(1),
@@ -1029,14 +1072,203 @@ fn creative_tabs(mods: &[ModMeta], games: &[crate::registry::RawGame], items: &[
     tabs
 }
 
+/// One list of every texture by name, for blocks, items and particles alike.
+struct TextureList {
+    names: Vec<String>,
+    index: FxHashMap<String, u32>,
+}
+
+impl TextureList {
+    fn new() -> Self {
+        let mut index = FxHashMap::default();
+        index.insert("core:missing".to_string(), 0);
+        Self { names: vec!["core:missing".into()], index }
+    }
+
+    fn intern(&mut self, name: &str) -> u32 {
+        if name.is_empty() {
+            return 0;
+        }
+        if let Some(&i) = self.index.get(name) {
+            return i;
+        }
+        self.names.push(name.to_string());
+        self.index.insert(name.to_string(), self.names.len() as u32 - 1);
+        self.names.len() as u32 - 1
+    }
+}
+
+type RawBiome = (BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule);
+type RawDim = (DimensionDef, usize, Vec<RawValue>);
+
+/// What the registrars brought, put together.
+struct Merged {
+    blocks: Vec<(ModId, RawBlock)>,
+    items: Vec<(ModId, RawItem)>,
+    biomes: Vec<RawBiome>,
+    dims: Vec<RawDim>,
+    tint_kinds: Vec<(String, u32)>,
+    biome_tints: Vec<(u32, (String, String, u32))>,
+    games: Vec<crate::registry::RawGame>,
+}
+
+struct BlockTables {
+    states: Vec<StateInfo>,
+    block_defs: Vec<BlockDef>,
+    /// Per block: (block components, per-state components) for the component pass.
+    block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>)>,
+    /// What each registered block opens, by menu name (resolved once menus are frozen).
+    opens_names: Vec<String>,
+    block_names: FxHashMap<String, u32>,
+}
+
+struct ItemTables {
+    item_defs: Vec<ItemDef>,
+    item_values: Vec<(ModId, Vec<RawValue>)>,
+    item_names: FxHashMap<String, u32>,
+}
+
+struct BiomeTables {
+    biome_defs: Vec<BiomeDef>,
+    biome_values: Vec<Vec<RawValue>>,
+    biome_rules: Vec<crate::server::terrain::RawRule>,
+    biome_names: FxHashMap<String, u32>,
+}
+
+struct DimTables {
+    dim_defs: Vec<DimensionDef>,
+    dim_values: Vec<(ModId, Vec<RawValue>)>,
+    dim_names: FxHashMap<String, u32>,
+    spawn_dim: u32,
+    void_dim: u32,
+}
+
+/// What later stages look names up in, once the components are known.
+#[derive(Clone, Copy)]
+struct Lookups<'a> {
+    mods: &'a [ModMeta],
+    block_defs: &'a [BlockDef],
+    block_names: &'a FxHashMap<String, u32>,
+    dim_names: &'a FxHashMap<String, u32>,
+    components: &'a Components,
+    state_count: u32,
+}
+
 /// Merges per-mod registrars into frozen content. Ids are assigned in name order, so they do not
-/// depend on which mod finished registering first.
+/// depend on which mod finished registering first. The order of the stages is the meaning here:
+/// each one reads what the ones before it settled.
 pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Vec<String>> {
     let order = load_order(&mods);
     for (m, o) in mods.iter_mut().zip(&order) {
         m.order = *o;
     }
     let mut errors: Vec<String> = Vec::new();
+    let Merged { blocks, mut items, mut biomes, mut dims, tint_kinds, biome_tints, mut games } = merge_registrars(&mods, regs, &mut errors);
+    let mut blocks = apply_replacements(&mods, blocks, &mut items);
+    apply_block_models(&mods, &mut blocks, &mut errors);
+    let tint_kinds = freeze_tints(tint_kinds, biome_tints, &mut biomes, &mut errors);
+    check_unique(&mods, &blocks, &mut items, &mut biomes, &mut dims, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut textures = TextureList::new();
+    let crack_textures: [u32; 10] = std::array::from_fn(|i| textures.intern(&format!("core:block/destroy_{i}")));
+    let fire_texture = textures.intern("core:block/fire");
+    let block_tables = number_blocks(&mods, blocks, &mut textures, &mut errors);
+    let item_tables = number_items(&mods, items, &block_tables, &mut textures, &mut errors);
+    let biome_tables = number_biomes(biomes);
+    let dim_tables = number_dimensions(&mods, dims);
+    let entities = crate::registry::freeze_entities(&mut games, &mut errors);
+
+    let sets = take_sets(&mods, &mut games);
+    let builder = declare_components(&mods, &games, &sets, &block_tables, &item_tables, &entities, &biome_tables, &dim_tables, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let (components, ref_lists) = fill_components(builder, &mods, &sets, &block_tables, &item_tables, &entities, &biome_tables, &dim_tables, &tint_kinds, &mut errors);
+    let BlockTables { mut states, mut block_defs, opens_names, block_names, .. } = block_tables;
+    let ItemTables { mut item_defs, item_names, .. } = item_tables;
+    let BiomeTables { biome_defs, biome_rules, biome_names, .. } = biome_tables;
+    let DimTables { mut dim_defs, dim_names, spawn_dim, void_dim, .. } = dim_tables;
+    let ids = component_ids(&components);
+    flatten_components(&mut states, &mut item_defs, &components, &ids);
+    let tool_classes = tool_classes(&components);
+
+    let look = Lookups { mods: &mods, block_defs: &block_defs, block_names: &block_names, dim_names: &dim_names, components: &components, state_count: states.len() as u32 };
+    place_features(&mut games, &mut dim_defs, look, &mut errors);
+    let (templates, template_names) = freeze_templates(&mut games, look, &mut errors);
+    place_structures(&mut games, &mut dim_defs, &templates, &template_names, look, &mut errors);
+    build_terrains(&mut games, &mut dim_defs, &biome_names, &biome_rules, look, &mut errors);
+    let commands = freeze_commands(&mods, &mut games, &mut errors);
+    let mut word_sets = collect_word_sets(&mut games);
+    let (liquids, reactions) = freeze_liquids(&mut games, &mut states, &block_defs, &block_names, &components, &mut errors);
+    let (item_liquid, containers) = item_containers(&item_defs, &liquids, &components, &mut errors);
+    let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
+    let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
+    ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
+    let tag_items = crate::refs::tag_items(&components, &ordered_items);
+    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut errors);
+    let stack_flags = collect_stack_flags(&games, &components);
+    // The first block with a tag, for `fluid:#tag` in recipes.
+    let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
+    let block_of_tag = |tag: &str| components.id(tag).and_then(|t| block_defs[1..].iter().find(|b| components.has(crate::components::BLOCK, b.first_state, t))).map(|b| b.name.clone());
+    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &block_of_tag, &order_of, &mut errors);
+    link_particles(&mut game, &mut textures);
+    check_ambient_particles(&game, &components, states.len() as u32, &mut errors);
+    link_entity_templates(&mut game, &templates, &template_names, &mut errors);
+    link_equipment(&game, &mut item_defs, &components);
+    link_menus(&mut game, &mut block_defs, &item_defs, &opens_names, &mods, &mut errors);
+    word_sets.entry("core:rules".into()).or_default().extend(game.configs.iter().filter(|d| d.scope == abi::config_scope::WORLD).map(|d| d.name.clone()));
+    check_loot_smelting(&loot, &game, &mut errors);
+    resolve_sounds(&mut states, &mut game, &block_defs, &components, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut spread_tags: Vec<u32> = states.iter().filter_map(|s| s.spread.map(|sp| sp.0)).collect();
+    spread_tags.sort_unstable();
+    spread_tags.dedup();
+    let tight = states.iter().map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb }).collect();
+    Ok(Content {
+        spread_tags,
+        mods,
+        tight,
+        states,
+        blocks: block_defs,
+        items: item_defs,
+        biomes: biome_defs,
+        templates,
+        template_names,
+        ref_lists,
+        word_sets,
+        tint_kinds,
+        dims: dim_defs,
+        components,
+        ids,
+        tool_classes,
+        tag_items,
+        textures: textures.names,
+        crack_textures,
+        fire_texture,
+        commands,
+        block_names,
+        item_names,
+        creative_tabs,
+        dim_names,
+        spawn_dim,
+        void_dim,
+        biome_names,
+        game,
+        liquids,
+        reactions,
+        item_liquid,
+        containers,
+        loot,
+        stack_flags,
+    })
+}
+
+fn merge_registrars(mods: &[ModMeta], regs: Vec<RawRegistrar>, errors: &mut Vec<String>) -> Merged {
     let mut blocks: Vec<(ModId, RawBlock)> = Vec::new();
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
     let mut biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)> = Vec::new();
@@ -1054,6 +1286,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         biomes.extend(r.biomes);
         dims.extend(r.dims);
     }
+    Merged { blocks, items, biomes, dims, tint_kinds, biome_tints, games }
+}
+
+fn apply_replacements(mods: &[ModMeta], mut blocks: Vec<(ModId, RawBlock)>, items: &mut Vec<(ModId, RawItem)>) -> Vec<(ModId, RawBlock)> {
     blocks.par_sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
     items.par_sort_by(|a, b| a.1.name.cmp(&b.1.name));
     // A replacement wins over the original if its mod depends on the original's mod. The
@@ -1081,15 +1317,14 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             _ => kept.push((owner, b)),
         }
     }
-    let mut blocks = kept;
-    // Shapes from model files (`models/block/<name>.json`) in the block's namespace's mod: read
-    // here, so collision and selection follow them on the server and every client alike.
-    let read_model = |name: &str| -> Option<String> {
-        let (ns, path) = name.split_once(':')?;
-        let dir = &mods.iter().find(|m| m.id == ns)?.assets;
-        std::fs::read_to_string(dir.join("models").join(format!("{path}.json"))).ok()
-    };
-    for (_, b) in &mut blocks {
+    kept
+}
+
+/// Shapes from model files (`models/block/<name>.json`) in the block's namespace's mod: read
+/// here, so collision and selection follow them on the server and every client alike.
+fn apply_block_models(mods: &[ModMeta], blocks: &mut [(ModId, RawBlock)], errors: &mut Vec<String>) {
+    let read_model = |name: &str| model_file(mods, name);
+    for (_, b) in blocks.iter_mut() {
         let Some((ns, path)) = b.name.split_once(':') else { continue };
         match crate::block_model::load(&format!("{ns}:block/{path}"), &read_model) {
             Ok(Some(m)) => apply_model(b, &m),
@@ -1097,6 +1332,15 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             Err(e) => errors.push(e),
         }
     }
+}
+
+fn model_file(mods: &[ModMeta], name: &str) -> Option<String> {
+    let (ns, path) = name.split_once(':')?;
+    let dir = &mods.iter().find(|m| m.id == ns)?.assets;
+    std::fs::read_to_string(dir.join("models").join(format!("{path}.json"))).ok()
+}
+
+fn freeze_tints(mut tint_kinds: Vec<(String, u32)>, mut biome_tints: Vec<(u32, (String, String, u32))>, biomes: &mut [RawBiome], errors: &mut Vec<String>) -> Vec<(String, u32)> {
     if tint_kinds.len() > abi::tint::MAX as usize {
         errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX));
     }
@@ -1106,8 +1350,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let tint_id = |name: &str| tint_kinds.iter().position(|k| k.0 == name).filter(|i| *i < abi::tint::MAX as usize).map(|i| i as u8 + 1);
-    let tint_names: Vec<String> = tint_kinds.iter().take(abi::tint::MAX as usize).map(|k| k.0.clone()).collect();
-    for (b, ..) in &mut biomes {
+    for (b, ..) in biomes.iter_mut() {
         b.tints.extend(tint_kinds.iter().map(|k| k.1));
     }
     // In load order: a mod's colors win over those of the mods it depends on.
@@ -1119,6 +1362,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     tint_kinds.truncate(abi::tint::MAX as usize);
+    tint_kinds
+}
+
+fn check_unique(mods: &[ModMeta], blocks: &[(ModId, RawBlock)], items: &mut Vec<(ModId, RawItem)>, biomes: &mut [RawBiome], dims: &mut [RawDim], errors: &mut Vec<String>) {
     let mut seen = rustc_hash::FxHashSet::default();
     items.retain(|(_, i)| seen.insert(i.name.clone()));
     biomes.sort_by(|a, b| a.0.name.cmp(&b.0.name));
@@ -1138,27 +1385,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     if biomes.len() > 32768 {
         errors.push(format!("{} biomes registered, at most 32768 fit", biomes.len()));
     }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+}
 
-    // One list of every texture by name, for blocks, items and particles alike.
-    let mut textures: Vec<String> = vec!["core:missing".into()];
-    let mut tex_index: FxHashMap<String, u32> = FxHashMap::default();
-    tex_index.insert("core:missing".into(), 0);
-    let intern = |textures: &mut Vec<String>, tex_index: &mut FxHashMap<String, u32>, name: &str| -> u32 {
-        if name.is_empty() {
-            return 0;
-        }
-        *tex_index.entry(name.to_string()).or_insert_with(|| {
-            textures.push(name.to_string());
-            textures.len() as u32 - 1
-        })
-    };
-    let mut tex = |name: &str| intern(&mut textures, &mut tex_index, name);
-    let crack_textures: [u32; 10] = std::array::from_fn(|i| tex(&format!("core:block/destroy_{i}")));
-    let fire_texture = tex("core:block/fire");
-
+fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mut TextureList, errors: &mut Vec<String>) -> BlockTables {
+    let mut tex = |name: &str| textures.intern(name);
     let mut states = vec![StateInfo {
         block: 0,
         flags: abi::block_flags::REPLACEABLE | abi::block_flags::NOT_TARGETABLE,
@@ -1185,7 +1415,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         smother: None,
         sounds: [u32::MAX; 4],
     }];
-    // What each registered block opens, by menu name (resolved once menus are frozen).
     let mut opens_names: Vec<String> = Vec::new();
     let mut block_defs = vec![BlockDef {
         name: "core:air".into(),
@@ -1305,7 +1534,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
 
     let block_names: FxHashMap<String, u32> =
         block_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
+    BlockTables { states, block_defs, block_values, opens_names, block_names }
+}
 
+fn number_items(mods: &[ModMeta], items: Vec<(ModId, RawItem)>, blocks: &BlockTables, textures: &mut TextureList, errors: &mut Vec<String>) -> ItemTables {
+    let BlockTables { block_defs, block_names, .. } = blocks;
+    let read_model = |name: &str| model_file(mods, name);
     let mut item_defs = vec![ItemDef {
         name: "core:empty".into(),
         owner: ModId(u32::MAX),
@@ -1334,7 +1568,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 }
             }
         };
-        let mut icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { intern(&mut textures, &mut tex_index, &it.texture) };
+        let mut icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { textures.intern(&it.texture) };
         // Its model file: a flat item of another texture, or boxes (faces it leaves to the item
         // show the icon).
         let mut model = Vec::new();
@@ -1342,7 +1576,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             match crate::block_model::load(&format!("{ns}:item/{path}"), &read_model) {
                 Ok(Some(m)) => {
                     if let Some(t) = m.sprite.filter(|t| !t.is_empty()) {
-                        icon = intern(&mut textures, &mut tex_index, &t);
+                        icon = textures.intern(&t);
                     }
                     let own = if icon == u32::MAX { 0 } else { icon };
                     model = m
@@ -1351,7 +1585,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                         .map(|b| ModelBox {
                             min: b.min.map(|v| v / 16.0),
                             max: b.max.map(|v| v / 16.0),
-                            textures: std::array::from_fn(|i| if b.textures[i].is_empty() { own } else { intern(&mut textures, &mut tex_index, &b.textures[i]) }),
+                            textures: std::array::from_fn(|i| if b.textures[i].is_empty() { own } else { textures.intern(&b.textures[i]) }),
                             uv: b.uv,
                         })
                         .collect();
@@ -1377,7 +1611,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let item_names: FxHashMap<String, u32> =
         item_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
+    ItemTables { item_defs, item_values, item_names }
+}
 
+fn number_biomes(biomes: Vec<RawBiome>) -> BiomeTables {
     let mut biome_values = Vec::new();
     let mut biome_rules = Vec::new();
     let biome_defs: Vec<BiomeDef> = biomes
@@ -1391,6 +1628,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         })
         .collect();
     let biome_names: FxHashMap<String, u32> = biome_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
+    BiomeTables { biome_defs, biome_values, biome_rules, biome_names }
+}
+
+fn number_dimensions(mods: &[ModMeta], dims: Vec<RawDim>) -> DimTables {
     let mut dim_values = Vec::new();
     let mut dim_defs: Vec<DimensionDef> = dims
         .into_iter()
@@ -1417,71 +1658,108 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .or_else(|| dim_defs[..void_dim as usize].iter().enumerate().min_by_key(|(_, d)| order_of_mod(d.owner)))
         .map_or(void_dim, |(i, _)| i as u32);
     let dim_names: FxHashMap<String, u32> = dim_defs.iter().enumerate().map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    DimTables { dim_defs, dim_values, dim_names, spawn_dim, void_dim }
+}
 
-    let entities = crate::registry::freeze_entities(&mut games, &mut errors);
+fn take_sets(mods: &[ModMeta], games: &mut [crate::registry::RawGame]) -> Vec<RawSet> {
+    let mut sets: Vec<RawSet> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.sets)).collect();
+    // Stable sort keeps registration order within a mod.
+    sets.sort_by_key(|s| mods[s.owner.0 as usize].order);
+    sets
+}
 
-    // ------------------------------------------------ components
+#[allow(clippy::too_many_arguments)]
+fn declare_components(
+    mods: &[ModMeta],
+    games: &[crate::registry::RawGame],
+    sets: &[RawSet],
+    blocks: &BlockTables,
+    items: &ItemTables,
+    entities: &crate::registry::Entities,
+    biomes: &BiomeTables,
+    dims: &DimTables,
+    errors: &mut Vec<String>,
+) -> comps::Builder {
+    let BlockTables { block_defs, block_values, .. } = blocks;
+    let ItemTables { item_defs, item_values, .. } = items;
+    let BiomeTables { biome_defs, biome_values, .. } = biomes;
+    let DimTables { dim_defs, dim_values, .. } = dims;
     let mut cb = comps::Builder::default();
     let who = |m: ModId, entry: &str| format!("{}: {entry}", mods.get(m.0 as usize).map_or("engine", |m| m.id.as_str()));
     for (i, (owner, bv, sv)) in block_values.iter().enumerate() {
         let name = &block_defs[i].name;
         for v in bv.iter().chain(sv.iter().flatten()) {
-            cb.declare_value(v, &|| who(*owner, name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, name), errors);
         }
     }
     for (i, (owner, v)) in item_values.iter().enumerate() {
         for v in v {
-            cb.declare_value(v, &|| who(*owner, &item_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &item_defs[i].name), errors);
         }
     }
     for (k, (owner, v)) in entities.values.iter().enumerate() {
         for v in v {
-            cb.declare_value(v, &|| who(*owner, &entities.kinds[k].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &entities.kinds[k].name), errors);
         }
     }
     for (i, v) in biome_values.iter().enumerate() {
         for v in v {
-            cb.declare_value(v, &|| format!("biome {}", biome_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| format!("biome {}", biome_defs[i].name), errors);
         }
     }
     for (i, (owner, v)) in dim_values.iter().enumerate() {
         for v in v {
-            cb.declare_value(v, &|| who(*owner, &dim_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &dim_defs[i].name), errors);
         }
     }
-    let mut sets: Vec<RawSet> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.sets)).collect();
-    // Stable sort keeps registration order within a mod.
-    sets.sort_by_key(|s| mods[s.owner.0 as usize].order);
-    for s in &sets {
+    for s in sets {
         if s.remove {
-            cb.declare(&s.value.name, &s.value.schema, None, &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
+            cb.declare(&s.value.name, &s.value.schema, None, &|| who(s.owner, &format!("set on {:?}", s.target)), errors);
         } else {
-            cb.declare_value(&s.value, &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
+            cb.declare_value(&s.value, &|| who(s.owner, &format!("set on {:?}", s.target)), errors);
         }
     }
-    for g in &games {
+    for g in games {
         // Values recipes carry may be on nothing else.
         for v in g.recipes.iter().flat_map(|r| &r.values) {
-            cb.declare_value(v, &|| format!("a {} recipe", v.name), &mut errors);
+            cb.declare_value(v, &|| format!("a {} recipe", v.name), errors);
         }
         for rc in &g.components {
-            cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), &mut errors);
+            cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), errors);
         }
     }
-    cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
-    cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), &mut errors);
-    cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), &mut errors);
+    cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), errors);
+    cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), errors);
+    cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
     for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::SHAPE, "bytes"), (crate::registry::SIMULATED, "u64")] {
-        cb.declare(name, schema, None, &|| "the engine".into(), &mut errors);
+        cb.declare(name, schema, None, &|| "the engine".into(), errors);
     }
-    for g in &games {
+    for g in games {
         for (name, schema, _) in &g.stack_components {
-            cb.declare(name, schema, None, &|| format!("stack component {name}"), &mut errors);
+            cb.declare(name, schema, None, &|| format!("stack component {name}"), errors);
         }
     }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    cb
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_components(
+    mut cb: comps::Builder,
+    mods: &[ModMeta],
+    sets: &[RawSet],
+    blocks: &BlockTables,
+    items: &ItemTables,
+    entities: &crate::registry::Entities,
+    biomes: &BiomeTables,
+    dims: &DimTables,
+    tint_kinds: &[(String, u32)],
+    errors: &mut Vec<String>,
+) -> (Components, Vec<Vec<[u32; 2]>>) {
+    let BlockTables { states, block_defs, block_values, block_names, .. } = blocks;
+    let ItemTables { item_defs, item_values, item_names } = items;
+    let BiomeTables { biome_defs, biome_values, biome_names, .. } = biomes;
+    let DimTables { dim_defs, dim_values, dim_names, .. } = dims;
+    let tint_names: Vec<String> = tint_kinds.iter().map(|k| k.0.clone()).collect();
     cb.start([states.len(), item_defs.len(), entities.kinds.len(), biome_defs.len(), dim_defs.len()]);
     // References in values (`block`, `blocks`, `item`) become ids here, so a typo is a load error.
     let ref_lists: std::rc::Rc<std::cell::RefCell<Vec<Vec<[u32; 2]>>>> = Default::default();
@@ -1557,7 +1835,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     // Sets by name first, then by tag, so a tag added by name is seen by tag patterns.
     for pass in 0..2 {
-        for s in &sets {
+        for s in sets {
             if matches!(s.target, Target::Tagged(_)) != (pass == 1) {
                 continue;
             }
@@ -1617,8 +1895,13 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     errors.append(&mut cb.errors);
     let components = cb.finish();
+    let lists = std::mem::take(&mut *ref_lists.borrow_mut());
+    (components, lists)
+}
+
+fn component_ids(components: &Components) -> Ids {
     let id = |n: &str| components.id(n);
-    let ids = Ids {
+    Ids {
         max_stack: id(abi::comp::MAX_STACK),
         durability: id(abi::comp::DURABILITY),
         attack_damage: id(abi::comp::ATTACK_DAMAGE),
@@ -1631,8 +1914,17 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         worn: id(abi::comp::WORN),
         worn_texture: id(abi::comp::WORN_TEXTURE),
         wear_per_hit: id(abi::comp::WEAR_PER_HIT),
-    };
-    // What hot code reads per state (physics, light, breaking) goes into flat fields.
+        attack_speed: id(abi::comp::ATTACK_SPEED),
+        use_ticks: id(abi::comp::USE_TICKS),
+        sweeps: id(abi::comp::SWEEPS),
+        no_creative_break: id(abi::comp::NO_CREATIVE_BREAK),
+        snowy: id(abi::comp::SNOWY),
+    }
+}
+
+/// What hot code reads per state (physics, light, breaking) goes into flat fields.
+fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], components: &Components, ids: &Ids) {
+    let id = |n: &str| components.id(n);
     let get = |state: u32, name: &str| id(name).and_then(|c| components.bytes(comps::BLOCK, state, c));
     let f32_of = |state: u32, name: &str| get(state, name).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let u32_of = |state: u32, name: &str| get(state, name).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
@@ -1669,14 +1961,20 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         d.durability = components.get::<u32>(comps::ITEM, i, ids.durability.unwrap_or(u32::MAX)).unwrap_or(0);
         d.attack = components.get::<f32>(comps::ITEM, i, ids.attack_damage.unwrap_or(u32::MAX)).unwrap_or(1.0);
     }
-    let tool_classes: Vec<(u32, Option<u32>)> = components
+}
+
+fn tool_classes(components: &Components) -> Vec<(u32, Option<u32>)> {
+    components
         .names
         .iter()
         .enumerate()
         .filter_map(|(i, n)| n.strip_prefix("mineable/").map(|class| (i as u32, components.id(&format!("tools/{class}")))))
-        .collect();
+        .collect()
+}
 
-    let mut dim_defs = dim_defs;
+/// Ores, scatters and decorations go into the dimensions they name, or every one but bare ones.
+fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [DimensionDef], look: Lookups, errors: &mut Vec<String>) {
+    let Lookups { mods, block_defs, block_names, dim_names, components, state_count } = look;
     // Ores, scatters and decorations go into the dimensions they name, or every one but bare ones.
     let not_bare: Vec<usize> = (0..dim_defs.len()).filter(|&d| !dim_defs[d].bare).collect();
     let targets = |what: &str, names: &[String], errors: &mut Vec<String>| -> Vec<usize> {
@@ -1702,10 +2000,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             errors.push(format!("ore {}: unknown block", o.block));
             continue;
         };
-        let dims = targets(&format!("ore {}", o.block), &o.dimensions, &mut errors);
+        let dims = targets(&format!("ore {}", o.block), &o.dimensions, errors);
         let mut replace: Vec<u32> = Vec::new();
         for r in &o.replace {
-            match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, &block_names, &block_defs, &components, states.len() as u32)) {
+            match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, block_names, block_defs, components, state_count)) {
                 Ok(b) => replace.extend(b),
                 Err(e) => errors.push(format!("ore {}: replace: {e}", o.block)),
             }
@@ -1715,7 +2013,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let salt = crate::registry::name_hash(&o.block);
         let biome = match o.biome.as_str() {
             "" => None,
-            t => match crate::refs::tag(&components, t) {
+            t => match crate::refs::tag(components, t) {
                 Ok(t) => Some(t),
                 Err(e) => {
                     errors.push(format!("ore {}: biome: {e}", o.block));
@@ -1751,18 +2049,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             errors.push(format!("{what}: cell {} and reach {} (cell at least 1)", s.cell, s.reach));
             continue;
         }
-        for d in targets(&what, &s.dimensions, &mut errors) {
-            dim_defs[d].scatters.push(ScatterDef { owner: s.owner, name: s.name.clone(), cell: s.cell, reach: s.reach, density, salt: crate::registry::name_hash(&s.name), shape: s.shape });
+        for d in targets(&what, &s.dimensions, errors) {
+            dim_defs[d].scatters.push(ScatterDef { owner: s.owner, cell: s.cell, reach: s.reach, density, salt: crate::registry::name_hash(&s.name), shape: s.shape });
         }
     }
     let mut raw_decorations: Vec<(ModId, Vec<String>, Callback)> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.decorations)).collect();
     raw_decorations.sort_by_key(|d| mods[d.0.0 as usize].order);
     for (owner, dims, cb) in raw_decorations {
-        for d in targets(&format!("decoration of {}", mods[owner.0 as usize].id), &dims, &mut errors) {
+        for d in targets(&format!("decoration of {}", mods[owner.0 as usize].id), &dims, errors) {
             dim_defs[d].decorations.push((owner, cb));
         }
     }
-    // Templates: block names resolved once, so a typo is a load error, not a missing block later.
+}
+
+/// Block names resolved once, so a typo is a load error, not a missing block later.
+fn freeze_templates(games: &mut [crate::registry::RawGame], look: Lookups, errors: &mut Vec<String>) -> (Vec<TemplateDef>, FxHashMap<String, u32>) {
+    let Lookups { block_defs, block_names, .. } = look;
     let mut raw_templates: Vec<crate::registry::RawTemplate> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.templates)).collect();
     raw_templates.sort_by(|a, b| a.name.cmp(&b.name));
     let mut templates: Vec<TemplateDef> = Vec::new();
@@ -1783,6 +2085,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         templates.push(TemplateDef { name: t.name, blocks });
     }
     let template_names: FxHashMap<String, u32> = templates.iter().enumerate().map(|(i, t)| (t.name.clone(), i as u32)).collect();
+    (templates, template_names)
+}
+
+fn place_structures(games: &mut [crate::registry::RawGame], dim_defs: &mut [DimensionDef], templates: &[TemplateDef], template_names: &FxHashMap<String, u32>, look: Lookups, errors: &mut Vec<String>) {
+    let Lookups { dim_names, components, .. } = look;
     let mut raw_structures: Vec<crate::registry::RawStructure> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.structures)).collect();
     raw_structures.sort_by(|a, b| (&a.template, &a.dimension).cmp(&(&b.template, &b.dimension)));
     for s in raw_structures {
@@ -1797,7 +2104,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let blocks = templates[t as usize].blocks.clone();
         let biome = match s.biome.as_str() {
             "" => None,
-            t => match crate::refs::tag(&components, t) {
+            t => match crate::refs::tag(components, t) {
                 Ok(t) => Some(t),
                 Err(e) => {
                     errors.push(format!("structure {}: biome: {e}", s.template));
@@ -1809,7 +2116,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let salt = crate::registry::name_hash(&s.template);
         dim_defs[d as usize].structures.push(StructureDef { name: s.template, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
     }
-    // Terrains: the owner's description first, then other mods' edits in load order.
+}
+
+/// The owner's description first, then other mods' edits in load order.
+fn build_terrains(games: &mut [crate::registry::RawGame], dim_defs: &mut [DimensionDef], biome_names: &FxHashMap<String, u32>, biome_rules: &[crate::server::terrain::RawRule], look: Lookups, errors: &mut Vec<String>) {
+    let Lookups { mods, block_defs, block_names, dim_names, .. } = look;
     let mut raw_terrain: Vec<crate::server::terrain::RawTerrain> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.terrain)).collect();
     raw_terrain.retain(|t| {
         let known = dim_names.contains_key(&t.dimension);
@@ -1840,16 +2151,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             biome: &|n| biome_names.get(n).copied(),
             biome_rule: &|n| biome_names.get(n).map(|&b| &biome_rules[b as usize]),
         };
-        let t = crate::server::terrain::build(&def.name, &|m| mods[m.0 as usize].id.clone(), ops, &names, &mut errors);
+        let t = crate::server::terrain::build(&def.name, &|m| mods[m.0 as usize].id.clone(), ops, &names, errors);
         dim_defs[d].terrain = Some(Box::new(t));
     }
-    // The engine's commands first, through the same list mods add to (and may replace them in).
-    let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
-    let engine_commands = crate::server::BUILTIN_COMMANDS.iter().map(|c| (c.0, c.1, false)).chain(crate::app::CLIENT_COMMANDS.iter().map(|c| (c.0, c.1, true)));
-    for (name, usage, client) in engine_commands {
-        let alts = crate::commands::parse_usage(usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef::new(name, usage, alts, None, client));
-    }
+}
+
+fn collect_word_sets(games: &mut [crate::registry::RawGame]) -> FxHashMap<String, Vec<String>> {
     // Word sets for `word(#set)` parameters: the engine's, then what mods add in load order.
     let mut word_sets: FxHashMap<String, Vec<String>> = FxHashMap::default();
     word_sets.insert("core:gizmos".into(), crate::client::gizmo::BUILTIN.iter().map(|g| g.to_string()).collect());
@@ -1858,6 +2165,20 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     for (_, (set, words)) in added {
         let list = word_sets.entry(set).or_default();
         list.extend(words.into_iter().filter(|w| !list.contains(w)).collect::<Vec<_>>());
+    }
+    word_sets
+}
+
+fn freeze_commands(mods: &[ModMeta], games: &mut [crate::registry::RawGame], errors: &mut Vec<String>) -> Vec<crate::commands::CommandDef> {
+    let mod_name = |m: ModId| mods[m.0 as usize].id.clone();
+    // The engine's commands first, through the same list mods add to (and may replace them in).
+    let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
+    let engine_commands = crate::server::BUILTIN_COMMANDS.iter().map(|c| (c.0, c.1, c.3, false)).chain(crate::app::CLIENT_COMMANDS.iter().map(|c| (c.0, c.1, abi::permission::EVERYONE, true)));
+    for (name, usage, level, client) in engine_commands {
+        let alts = crate::commands::parse_usage(usage).expect("engine command usage");
+        let mut def = crate::commands::CommandDef::new(name, usage, alts, None, client);
+        def.level = level;
+        commands.push(def);
     }
     let mut mod_commands: Vec<(ModId, String, String, Callback, bool)> = games
         .iter()
@@ -1883,6 +2204,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             None => commands.push(def),
         }
     }
+    for (name, level) in games.iter_mut().flat_map(|g| std::mem::take(&mut g.command_permissions)) {
+        match commands.iter_mut().find(|d| d.name == name) {
+            Some(d) => d.level = level.min(abi::permission::OWNER),
+            None => errors.push(format!("permission of unknown command /{name}")),
+        }
+    }
     // Other mods extend existing commands, in load order: more completion words, more branches.
     let mut extensions: Vec<(ModId, crate::registry::CommandExtension)> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.command_extensions)).collect();
     extensions.sort_by_key(|e| mods.get(e.0.0 as usize).map_or(u32::MAX, |m| m.order));
@@ -1900,7 +2227,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             },
         }
     }
-    let (liquids, reactions) = freeze_liquids(&mut games, &mut states, &block_defs, &block_names, &components, &mut errors);
+    commands
+}
+
+fn item_containers(item_defs: &[ItemDef], liquids: &[LiquidDef], components: &Components, errors: &mut Vec<String>) -> (FxHashMap<u32, (u16, u32)>, FxHashMap<(u32, u16), u32>) {
     let (mut item_liquid, mut containers) = (FxHashMap::default(), FxHashMap::default());
     if let (Some(lc), Some(rc)) = (components.id(abi::comp::LIQUID), components.id(abi::comp::REMAINDER)) {
         for i in 1..item_defs.len() as u32 {
@@ -1916,10 +2246,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }
     }
-    let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
-    let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
-    ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
-    let tag_items = crate::refs::tag_items(&components, &ordered_items);
+    (item_liquid, containers)
+}
+
+fn freeze_loot(games: &mut [crate::registry::RawGame], item_defs: &[ItemDef], item_names: &FxHashMap<String, u32>, tag_items: &FxHashMap<u32, Vec<u32>>, look: Lookups, errors: &mut Vec<String>) -> FxHashMap<String, crate::loot::Table> {
+    let Lookups { mods, block_defs, components, .. } = look;
     let mut defaults: FxHashMap<String, crate::loot::Table> = FxHashMap::default();
     // A block without a table of its own drops its item when harvested.
     for b in &block_defs[1..] {
@@ -1929,32 +2260,42 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let raw_loot: Vec<crate::loot::RawLoot> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot)).collect();
     let raw_mods: Vec<crate::loot::RawLootMod> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot_mods)).collect();
-    let resolve = crate::loot::Resolve { items: &item_names, tag_items: &tag_items, components: &components };
+    let resolve = crate::loot::Resolve { items: item_names, tag_items, components };
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
-    let loot = crate::loot::freeze(raw_loot, raw_mods, &order_of, &resolve, defaults, &mut errors);
+    crate::loot::freeze(raw_loot, raw_mods, &order_of, &resolve, defaults, errors)
+}
+
+fn collect_stack_flags(games: &[crate::registry::RawGame], components: &Components) -> FxHashMap<u32, u32> {
     let mut stack_flags: FxHashMap<u32, u32> = FxHashMap::default();
-    for g in &games {
+    for g in games {
         for (name, _, flags) in &g.stack_components {
             if let Some(id) = components.id(name) {
                 *stack_flags.entry(id).or_default() |= flags;
             }
         }
     }
-    // The first block with a tag, for `fluid:#tag` in recipes.
-    let block_of_tag = |tag: &str| components.id(tag).and_then(|t| block_defs[1..].iter().find(|b| components.has(crate::components::BLOCK, b.first_state, t))).map(|b| b.name.clone());
-    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &block_of_tag, &order_of, &mut errors);
+    stack_flags
+}
+
+fn link_particles(game: &mut crate::registry::Game, textures: &mut TextureList) {
     for p in &mut game.particles {
         for f in &mut p.frames {
-            *f = intern(&mut textures, &mut tex_index, &game.particle_textures[*f as usize]);
+            *f = textures.intern(&game.particle_textures[*f as usize]);
         }
     }
     game.particle_textures.clear();
+}
+
+fn check_ambient_particles(game: &crate::registry::Game, components: &Components, state_count: u32, errors: &mut Vec<String>) {
     if let Some(ap) = components.id(abi::comp::AMBIENT_PARTICLE) {
-        let mut named: Vec<&str> = (0..states.len() as u32).filter_map(|s| components.text(comps::BLOCK, s, ap)).filter(|n| !game.particle_names.contains_key(*n)).collect();
+        let mut named: Vec<&str> = (0..state_count).filter_map(|s| components.text(comps::BLOCK, s, ap)).flat_map(|n| n.split(',')).filter(|n| !game.particle_names.contains_key(*n)).collect();
         named.dedup();
         errors.extend(named.into_iter().map(|n| format!("ambient_particle: unknown particle {n}")));
     }
-    // A structure's box is what its blocks fill; a set size would only disagree with them.
+}
+
+/// A structure's box is what its blocks fill; a set size would only disagree with them.
+fn link_entity_templates(game: &mut crate::registry::Game, templates: &[TemplateDef], template_names: &FxHashMap<String, u32>, errors: &mut Vec<String>) {
     for kind in game.entities.iter_mut().filter(|k| !k.template_name.is_empty()) {
         match template_names.get(&kind.template_name) {
             Some(&t) => {
@@ -1966,7 +2307,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             None => errors.push(format!("entity {}: no template {}", kind.name, kind.template_name)),
         }
     }
-    // Items worn in an equipment slot carry its `worn/<slot>` tag.
+}
+
+/// Items worn in an equipment slot carry its `worn/<slot>` tag.
+fn link_equipment(game: &crate::registry::Game, item_defs: &mut [ItemDef], components: &Components) {
     for (e, slot) in game.player_layout.equipment.iter().enumerate() {
         if let Some(t) = components.id(&format!("worn/{}", slot.name)) {
             for (i, d) in item_defs.iter_mut().enumerate() {
@@ -1976,7 +2320,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }
     }
-    // Blocks open their menus; one with recipe kinds makes the block a station of them.
+}
+
+/// Blocks open their menus; one with recipe kinds makes the block a station of them.
+fn link_menus(game: &mut crate::registry::Game, block_defs: &mut [BlockDef], item_defs: &[ItemDef], opens_names: &[String], mods: &[ModMeta], errors: &mut Vec<String>) {
     for (b, menu) in opens_names.iter().enumerate().filter(|m| !m.1.is_empty()) {
         let def = &mut block_defs[b + 1];
         match game.menu_names.get(menu) {
@@ -1991,15 +2338,20 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             None => errors.push(format!("{}: block {} opens unknown menu {menu}", mods.get(def.owner.0 as usize).map_or("engine", |m| m.id.as_str()), def.name)),
         }
     }
-    word_sets.entry("core:rules".into()).or_default().extend(game.configs.iter().filter(|d| d.scope == abi::config_scope::WORLD).map(|d| d.name.clone()));
-    for (table, t) in &loot {
+}
+
+fn check_loot_smelting(loot: &FxHashMap<String, crate::loot::Table>, game: &crate::registry::Game, errors: &mut Vec<String>) {
+    for (table, t) in loot {
         for k in t.pools.iter().flat_map(|p| &p.entries).filter_map(|e| e.smelt.as_ref()) {
             if !game.recipe_kinds.contains(k) {
                 errors.push(format!("loot table {table} smelts by recipe kind {k}, which no mod registers"));
             }
         }
     }
-    // Sound events named by `sound` prefixes, resolved once.
+}
+
+/// Sound events named by `sound` prefixes, resolved once.
+fn resolve_sounds(states: &mut [StateInfo], game: &mut crate::registry::Game, block_defs: &[BlockDef], components: &Components, errors: &mut Vec<String>) {
     if let Some(sc) = components.id(abi::comp::SOUND) {
         let resolve = |prefix: Option<&str>, parts: [&str; 4]| -> [u32; 4] {
             parts.map(|p| prefix.and_then(|pre| game.sound_names.get(&format!("{pre}.{p}")).copied()).unwrap_or(u32::MAX))
@@ -2031,50 +2383,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             errors.push(format!("{what}: no sound events named {prefix}.*"));
         }
     }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    let mut spread_tags: Vec<u32> = states.iter().filter_map(|s| s.spread.map(|sp| sp.0)).collect();
-    spread_tags.sort_unstable();
-    spread_tags.dedup();
-    let tight = states.iter().map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb }).collect();
-    Ok(Content {
-        spread_tags,
-        mods,
-        tight,
-        states,
-        blocks: block_defs,
-        items: item_defs,
-        biomes: biome_defs,
-        templates,
-        template_names,
-        ref_lists: std::mem::take(&mut *ref_lists.borrow_mut()),
-        word_sets,
-        tint_kinds,
-        dims: dim_defs,
-        components,
-        ids,
-        tool_classes,
-        tag_items,
-        textures,
-        crack_textures,
-        fire_texture,
-        commands,
-        block_names,
-        item_names,
-        creative_tabs,
-        dim_names,
-        spawn_dim,
-        void_dim,
-        biome_names,
-        game,
-        liquids,
-        reactions,
-        item_liquid,
-        containers,
-        loot,
-        stack_flags,
-    })
 }
 
 fn freeze_liquids(
@@ -2087,9 +2395,11 @@ fn freeze_liquids(
 ) -> (Vec<LiquidDef>, Vec<ReactionDef>) {
     let mut raw: Vec<abi::LiquidDesc> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    let mut overlays: Vec<String> = Vec::new();
     for g in games.iter_mut() {
-        for (name, d) in std::mem::take(&mut g.liquids) {
+        for (name, overlay, d) in std::mem::take(&mut g.liquids) {
             names.push(name);
+            overlays.push(overlay);
             raw.push(d);
         }
     }
@@ -2124,7 +2434,36 @@ fn freeze_liquids(
             renewable: d.renewable,
             rises: d.density < 0,
             temperature: d.temperature,
+            swimmable: d.swimmable != 0,
+            fog_color: (d.fog_color != u32::MAX).then_some(d.fog_color),
+            fog_distance: d.fog_distance.max(0.1),
+            overlay: overlays[i].clone(),
+            overlay_opacity: d.overlay_opacity.clamp(0.0, 1.0),
         });
+    }
+    // Later mods' say on how any of them looks and whether it can be swum in.
+    for g in games.iter_mut() {
+        for (name, overlay, d) in std::mem::take(&mut g.liquid_changes) {
+            let Some(l) = liquids.iter_mut().find(|l| l.name == name) else {
+                errors.push(format!("change of liquid {name}: no such liquid"));
+                continue;
+            };
+            if d.swimmable != u32::MAX {
+                l.swimmable = d.swimmable != 0;
+            }
+            if d.fog_color != u32::MAX {
+                l.fog_color = Some(d.fog_color);
+            }
+            if !d.fog_distance.is_nan() {
+                l.fog_distance = d.fog_distance.max(0.1);
+            }
+            if !overlay.is_empty() {
+                l.overlay = overlay;
+            }
+            if !d.overlay_opacity.is_nan() {
+                l.overlay_opacity = d.overlay_opacity.clamp(0.0, 1.0);
+            }
+        }
     }
     let matcher = |s: &str, errors: &mut Vec<String>| -> Option<Match> {
         match crate::refs::Ref::parse(s).and_then(|r| crate::refs::blocks(&r, block_names, blocks, components, blocks.iter().map(|b| b.states).sum())) {

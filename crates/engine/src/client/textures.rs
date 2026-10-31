@@ -122,17 +122,6 @@ impl GameTextures {
         t
     }
 
-    pub fn destroy(&self, gpu: &mut dyn Backend) {
-        let mut i = self.inner.borrow_mut();
-        for e in &mut i.entries {
-            for t in e.images.drain(..) {
-                gpu.destroy_texture(t);
-            }
-        }
-        gpu.destroy_buffer(i.glow_buffer);
-        gpu.destroy_texture(self.blank.0);
-    }
-
     /// Bindless index of an entry's frame `n` (wrapping), or the blank texture while it loads.
     fn frame(&self, entry: Option<u32>, n: u32) -> u32 {
         let Some(e) = entry else { return self.blank.1 };
@@ -161,17 +150,6 @@ impl GameTextures {
     /// Texture ids there are: the content's and the connected texture tiles.
     pub fn count(&self) -> usize {
         self.inner.borrow().ids.len()
-    }
-
-    /// Frames of texture `id` (1 until it has loaded).
-    pub fn frames(&self, id: u32) -> u32 {
-        let i = self.inner.borrow();
-        i.ids.get(id as usize).and_then(|&e| i.entries.get(e as usize)).map_or(1, |e| e.frames.len().max(1) as u32)
-    }
-
-    /// Glow mask of a color texture (bindless index), `u32::MAX` for none.
-    pub fn glow_of(&self, index: u32) -> u32 {
-        self.inner.borrow().glow_map.get(index as usize).copied().unwrap_or(u32::MAX)
     }
 
     /// The glow map on the GPU, indexed by bindless color index.
