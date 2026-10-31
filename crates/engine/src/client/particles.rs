@@ -29,8 +29,15 @@ pub const HOOK: Hook = Hook {
     fallback: "return p.albedo * p.color;",
 };
 
+/// Vanilla's particles collide as a 0.2 block box around their center.
+fn particle_box(pos: DVec3) -> crate::physics::Aabb {
+    crate::physics::Aabb::around(pos - DVec3::Y * 0.1, 0.1, 0.2)
+}
+
 #[derive(Clone, Copy)]
 struct Particle {
+    /// Started inside a block: flies through until out of it.
+    through: bool,
     pos: DVec3,
     vel: Vec3,
     age: f32,
@@ -140,17 +147,27 @@ impl Particles {
         let n = (b.count as usize).min(MAX.saturating_sub(self.list.len()));
         for _ in 0..n {
             let mut r3 = || Vec3::new(self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0);
-            let off = r3() * Vec3::from_array(b.spread);
+            let place = r3();
+            let off = place * Vec3::from_array(b.spread);
             let mut dir = r3();
-            while dir.length_squared() > 1.0 {
-                dir = r3();
+            if b.outward != 0 {
+                // Vanilla's `Particle`: away from the middle, loosened, at (r + r + 1) / 3 of the speed.
+                dir = (place * 0.375 + dir * 0.4).normalize_or_zero() * (self.random() + self.random() + 1.0) / 3.0;
+            } else {
+                while dir.length_squared() > 1.0 {
+                    dir = r3();
+                }
             }
             let vel = Vec3::from_array(b.velocity) + dir * b.speed;
             let life = k.life[0] + (k.life[1] - k.life[0]) * self.random();
             let size = k.scale[0] + (k.scale[1] - k.scale[0]) * self.random();
             let piece = [(self.random() * 12.0) as u8, (self.random() * 12.0) as u8];
+            let at = pos + off.as_dvec3();
+            // A block can still be here on this client: the news of it going come separately.
+            let through = k.flags & pf::COLLIDE != 0 && crate::physics::collides(c, &|p| world.block_or_air(p), particle_box(at));
             self.list.push(Particle {
-                pos: pos + off.as_dvec3(),
+                through,
+                pos: at,
                 vel,
                 age: 0.0,
                 life,
@@ -183,7 +200,10 @@ impl Particles {
             p.vel.y -= k.gravity * dt;
             p.vel *= keep[p.kind as usize];
             let delta = (p.vel * dt).as_dvec3();
-            if k.flags & pf::COLLIDE != 0 {
+            if p.through {
+                p.pos += delta;
+                p.through = crate::physics::collides(c, &block, particle_box(p.pos));
+            } else if k.flags & pf::COLLIDE != 0 {
                 // Vanilla's particles collide as a 0.2 block box around their center.
                 let r = crate::physics::move_box(c, &block, p.pos - DVec3::Y * 0.1, 0.1, 0.2, delta, 0.0);
                 p.pos = r.pos + DVec3::Y * 0.1;
@@ -203,8 +223,9 @@ impl Particles {
             } else {
                 p.pos += delta;
             }
+            // Every tick as well: where a block just went, the light comes a moment later.
             let cell = p.pos.floor().as_ivec3();
-            if cell != p.cell {
+            if cell != p.cell || (p.age * crate::world::TPS as f32) as u32 != ((p.age - dt) * crate::world::TPS as f32) as u32 {
                 p.cell = cell;
                 p.light = world.light(cell);
             }

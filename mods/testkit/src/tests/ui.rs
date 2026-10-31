@@ -615,3 +615,23 @@ pub async fn scrollbar(t: T) -> R {
     t.c().close_screen();
     Ok(())
 }
+
+/// A mod's LED switches it for the next start and leaving does nothing else; the restart button
+/// shows only with something to bring in.
+pub async fn mods_switch(t: T) -> R {
+    t.c().open_screen(&screens::MODS);
+    t.screen("core:mods").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("id:mods_restart").is_none(), "nothing to restart for yet");
+    let file = format!("{}/test-config/disabled_mods.txt", t.c().run_dir());
+    t.check(t.click_ui("id:mod_led:testmod", 0), "a LED for the mod");
+    t.until("the restart button comes", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_some()).await?;
+    t.check(std::fs::read_to_string(&file).unwrap_or_default().contains("testmod"), "it is written down");
+    t.shot("switched").await?;
+    t.check(t.click_ui("id:mod_led:testmod", 0), "and back");
+    t.until("nothing to restart for again", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_none()).await?;
+    t.c().close_screen();
+    t.frames(3).await?;
+    t.check(!std::fs::read_to_string(&file).unwrap_or_default().contains("testmod"), "back on");
+    Ok(())
+}

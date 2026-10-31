@@ -84,11 +84,17 @@ pub async fn skiff_smooth(t: T) -> R {
     let x = |t: &T, id| t.c().entity(id).map_or(0.0, |e| e.pos[0]);
     // For 3.5 seconds (a turn is in it): it reverses once (overshooting and coming back would
     // reverse three times, jitter many times), never jumps, and its rider stays on its spot.
-    let (mut turns, mut dir, mut jump, mut slip) = (0, 0.0f64, 0.0f64, 0.0f64);
+    // A jump is what a step has beyond its 6 blocks a second: a long frame of the machine's makes
+    // a long step of a steady glide too, seen a frame later.
+    let (mut turns, mut dir, mut jump, mut slip, mut longest, mut before) = (0, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (mut last, mut rel) = (x(&t, skiff), x(&t, idol) - x(&t, skiff));
     let start = std::time::Instant::now();
+    let mut frame = start;
     while start.elapsed().as_secs_f64() < 3.5 {
         t.frames(1).await?;
+        let dt = frame.elapsed().as_secs_f64();
+        frame = std::time::Instant::now();
+        longest = longest.max(dt);
         let (now, now_rel) = (x(&t, skiff), x(&t, idol) - x(&t, skiff));
         let d = now - last;
         if d.abs() > 1e-6 {
@@ -97,10 +103,10 @@ pub async fn skiff_smooth(t: T) -> R {
             }
             dir = d.signum();
         }
-        (jump, slip) = (jump.max(d.abs()), slip.max((now_rel - rel).abs()));
-        (last, rel) = (now, now_rel);
+        (jump, slip) = (jump.max(d.abs() - 6.0 * (dt + before)), slip.max((now_rel - rel).abs()));
+        (last, rel, before) = (now, now_rel, dt);
     }
-    t.note(format!("{turns} reversals in 3.5 s, largest step {jump:.3}, rider moves on the deck up to {slip:.4} a frame"));
+    t.note(format!("{turns} reversals in 3.5 s, jumps up to {jump:.3}, longest frame {:.0} ms, rider moves on the deck up to {slip:.4} a frame", longest * 1000.0));
     t.check_eq(turns, 1, "the skiff turns once, without overshooting or jitter");
     t.check(jump < 0.15, "the skiff glides (no jumps)");
     t.check(slip < 0.02, "its rider stays on its spot of the deck");

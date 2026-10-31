@@ -65,6 +65,8 @@ pub enum Request {
     ModKey(weft_abi::ModId, weft_abi::Callback, String),
     Close,
     Quit,
+    /// Starts the game anew the way it was started, then leaves: what mods are on takes effect.
+    Restart,
     Rebuild,
     Rebind(String, crate::input::Chord),
     ResetBinds,
@@ -307,7 +309,8 @@ impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
         // Mods first: the engine's settings are `core:` configs like theirs.
         let cache = self.opts.run_dir.join("cache");
-        let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
+        let off = modloader::off_file(&self.opts.run_dir, self.opts.automated);
+        let mods = modloader::load(&self.opts.mod_dirs, &cache, &off)?;
         crate::config::set_automated(self.opts.automated);
         crate::settings::migrate(&self.opts.run_dir);
         crate::config::load(&self.opts.run_dir);
@@ -577,7 +580,7 @@ impl Running {
         }
         let storage = saves::Storage::open(meta.clone(), content());
         let server = server::spawn(
-            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance() },
+            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance(), dedicated: false, whitelist: None },
             Some(storage),
         );
         let (client_conn, server_conn) = net::local_pair();
@@ -611,7 +614,7 @@ impl Running {
         if let Some(mut g) = self.game.take() {
             if g.server.is_none() {
                 // A remote server's synced settings were in force; back to our own.
-                crate::config::load(&self.settings.run_dir);
+                crate::config::left_server(&self.settings.run_dir);
             }
             g.client.leave();
             self.gpu.wait_idle();
@@ -639,6 +642,12 @@ impl Running {
                     }
                 }
                 Request::Quit => self.quit = true,
+                Request::Restart => {
+                    match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(std::env::args().skip(1)).spawn()) {
+                        Ok(_) => self.quit = true,
+                        Err(e) => log::error!("restarting: {e}"),
+                    }
+                }
                 Request::Rebuild => self.rebuild_all(),
                 Request::ModCall(owner, cb) => {
                     let mut v = self.frame_view();
@@ -1870,7 +1879,9 @@ fn draw_overlays(r: &mut Running, info: &weft_render::FrameInfo, scale: f32, tex
         }
     }
     let (sw, sh) = r.gpu.surface_size();
-    labels.extend(r.mod_screen_text.iter().map(|(x, y, text, color, size)| (x * sw as f32 / scale, y * sh as f32 / scale, text, *color, *size)));
+    if !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
+        labels.extend(r.mod_screen_text.iter().map(|(x, y, text, color, size)| (x * sw as f32 / scale, y * sh as f32 / scale, text, *color, *size)));
+    }
     if !labels.is_empty() {
         let mut o = crate::ui::Ui::new();
         o.text_unit = text_unit;

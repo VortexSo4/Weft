@@ -104,10 +104,13 @@ fn relay_mode(settings: &Settings) -> RelayMode {
     if custom.is_empty() { RelayMode::Default } else { RelayMode::custom(custom) }
 }
 
-async fn endpoint(settings: &Settings, accept: bool) -> Result<Endpoint, String> {
+async fn endpoint(settings: &Settings, accept: bool, port: Option<u16>) -> Result<Endpoint, String> {
     let mut b = Endpoint::builder(presets::N0).secret_key(identity(&settings.run_dir)?).relay_mode(relay_mode(settings));
     if accept {
         b = b.alpns(vec![ALPN.to_vec()]);
+    }
+    if let Some(port) = port {
+        b = b.bind_addr(std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port))).map_err(|e| format!("network: {e}"))?;
     }
     b.bind().await.map_err(|e| format!("network: {e}"))
 }
@@ -141,6 +144,40 @@ pub fn ticket(addr: &EndpointAddr) -> String {
     format!("{};{};{}", addr.id, relay, ips.join(","))
 }
 
+/// `host` or `host:port`, as opposed to a ticket or a bare id.
+fn is_address(t: &str) -> bool {
+    let t = t.trim();
+    !t.is_empty() && !t.contains(';') && t.parse::<EndpointId>().is_err()
+}
+
+/// Where to connect for an address, with the default port if it names none.
+fn with_port(address: &str, port: u16) -> String {
+    let a = address.trim();
+    match a.parse::<std::net::IpAddr>() {
+        Ok(ip) => std::net::SocketAddr::new(ip, port).to_string(),
+        Err(_) if a.contains(':') => a.to_string(),
+        Err(_) => format!("{a}:{port}"),
+    }
+}
+
+/// Asks what is at an address for its ticket, and tries that very address first: what it says
+/// of itself may be private addresses behind a router.
+async fn ask_ticket(address: &str, port: u16) -> Result<EndpointAddr, String> {
+    use tokio::io::AsyncReadExt;
+    let target = with_port(address, port);
+    let wait = Duration::from_secs(5);
+    let stream = tokio::time::timeout(wait, tokio::net::TcpStream::connect(&target)).await.map_err(|_| format!("no answer from {target}"))?;
+    let mut stream = stream.map_err(|e| format!("{target}: {e}"))?;
+    let peer = stream.peer_addr().map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    let mut limited = (&mut stream).take(4096);
+    tokio::time::timeout(wait, limited.read_to_string(&mut text)).await.map_err(|_| format!("no answer from {target}"))?.map_err(|e| e.to_string())?;
+    let addr = parse_ticket(&text).map_err(|_| format!("{target} is not a Weft game"))?;
+    let mut all = vec![TransportAddr::Ip(peer)];
+    all.extend(addr.addrs.iter().cloned());
+    Ok(EndpointAddr::from_parts(addr.id, all))
+}
+
 fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
     let mut parts = t.trim().split(';');
     let id: EndpointId = parts.next().unwrap_or("").parse().map_err(|_| "invalid ticket".to_string())?;
@@ -156,46 +193,87 @@ fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
 
 pub struct Hosting {
     pub ticket: Option<String>,
+    /// Everything listening for players, stopped with the hosting.
+    task: Option<tokio::task::AbortHandle>,
 }
 
 pub static HOSTING: Mutex<Option<Hosting>> = Mutex::new(None);
 
 /// Starts accepting players for the running server. The ticket appears in `HOSTING` once the
-/// endpoint is online.
+/// endpoint is online. On the settings' port as well, where a client that only knows the address
+/// asks for the ticket (TCP) and then connects like any other (UDP): forward both.
 pub fn host(connect: crossbeam_channel::Sender<ServerConn>, settings: &Settings) {
     if HOSTING.lock().is_some() {
         return;
     }
-    *HOSTING.lock() = Some(Hosting { ticket: None });
+    *HOSTING.lock() = Some(Hosting { ticket: None, task: None });
     let settings = settings.clone();
-    runtime().spawn(async move {
-        let ep = match endpoint(&settings, true).await {
+    let task = runtime().spawn(async move {
+        let port = settings.server_port();
+        let ep = match endpoint(&settings, true, Some(port)).await {
             Ok(e) => e,
+            // The ticket still works without it, say with a second game on this machine.
             Err(e) => {
-                log::error!("{e}");
-                *HOSTING.lock() = Some(Hosting { ticket: None });
-                return;
+                log::warn!("port {port}: {e}; only tickets will reach this game");
+                match endpoint(&settings, true, None).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        log::error!("{e}");
+                        return;
+                    }
+                }
             }
         };
-        let _ = tokio::time::timeout(Duration::from_secs(8), ep.online()).await;
-        let t = ticket(&ep.addr());
-        log::info!("hosting, ticket: {t}");
-        if let Some(h) = HOSTING.lock().as_mut() {
-            h.ticket = Some(t);
-        }
-        while let Some(incoming) = ep.accept().await {
-            let connect = connect.clone();
-            tokio::spawn(async move {
-                if let Err(e) = accept(incoming, connect).await {
-                    log::warn!("incoming player: {e}");
-                }
-            });
+        tokio::select! {
+            _ = serve_ticket(ep.clone(), port) => {}
+            _ = accept_players(ep, connect) => {}
         }
     });
+    if let Some(h) = HOSTING.lock().as_mut() {
+        h.task = Some(task.abort_handle());
+    }
+}
+
+async fn accept_players(ep: Endpoint, connect: crossbeam_channel::Sender<ServerConn>) {
+    let _ = tokio::time::timeout(Duration::from_secs(8), ep.online()).await;
+    let t = ticket(&ep.addr());
+    log::info!("hosting, ticket: {t}");
+    if let Some(h) = HOSTING.lock().as_mut() {
+        h.ticket = Some(t);
+    }
+    while let Some(incoming) = ep.accept().await {
+        let connect = connect.clone();
+        tokio::spawn(async move {
+            if let Err(e) = accept(incoming, connect).await {
+                log::warn!("incoming player: {e}");
+            }
+        });
+    }
+}
+
+/// Tells whoever connects the ticket, as it is at that moment.
+async fn serve_ticket(ep: Endpoint, port: u16) {
+    use tokio::io::AsyncWriteExt;
+    let listener = match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("port {port}: {e}; only tickets will reach this game");
+            return std::future::pending().await;
+        }
+    };
+    log::info!("players can connect to port {port}");
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let t = ticket(&ep.addr());
+        tokio::spawn(async move {
+            let _ = stream.write_all(t.as_bytes()).await;
+        });
+    }
 }
 
 pub fn stop_hosting() {
-    *HOSTING.lock() = None;
+    if let Some(task) = HOSTING.lock().take().and_then(|h| h.task) {
+        task.abort();
+    }
 }
 
 async fn accept(incoming: iroh::endpoint::Incoming, connect: crossbeam_channel::Sender<ServerConn>) -> Result<(), String> {
@@ -273,7 +351,7 @@ async fn connect(settings: &Settings, addr: EndpointAddr) -> Result<(Endpoint, i
     let attempts = [(addr, Duration::from_secs(3)), (relayed, Duration::from_secs(20))];
     let mut last = String::new();
     for (i, (addr, wait)) in attempts.into_iter().enumerate() {
-        let ep = endpoint(settings, false).await?;
+        let ep = endpoint(settings, false, None).await?;
         match tokio::time::timeout(wait, ep.connect(addr, ALPN)).await {
             Ok(Ok(conn)) => return Ok((ep, conn)),
             Ok(Err(e)) => last = e.to_string(),
@@ -289,11 +367,12 @@ async fn connect(settings: &Settings, addr: EndpointAddr) -> Result<(Endpoint, i
 
 /// Connects to a host. Blocks up to 30 seconds.
 pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
-    let addr = parse_ticket(ticket)?;
+    let ticket = ticket.to_string();
     let settings = settings.clone();
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<ClientConn, String>>(1);
     runtime().spawn(async move {
         let result = async {
+            let addr = if is_address(&ticket) { ask_ticket(&ticket, settings.server_port()).await? } else { parse_ticket(&ticket)? };
             let (ep, conn) = connect(&settings, addr).await?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
             let mut hello = codec::W::default();
@@ -335,6 +414,25 @@ pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn addresses_and_tickets_tell_apart() {
+        let id = "0".repeat(64);
+        for a in ["127.0.0.1", "127.0.0.1:27182", "play.example.org", "play.example.org:25", "::1", "[::1]:25"] {
+            assert!(super::is_address(a), "{a}");
+        }
+        assert!(!super::is_address(""));
+        assert!(!super::is_address(&format!("{id};;")), "a ticket");
+    }
+
+    #[test]
+    fn an_address_gets_the_default_port() {
+        assert_eq!(super::with_port("10.0.0.1", 7), "10.0.0.1:7");
+        assert_eq!(super::with_port("10.0.0.1:8", 7), "10.0.0.1:8");
+        assert_eq!(super::with_port("play.example.org", 7), "play.example.org:7");
+        assert_eq!(super::with_port("::1", 7), "[::1]:7");
+        assert_eq!(super::with_port("[::1]:8", 7), "[::1]:8");
+    }
+
     #[test]
     fn identity_is_kept_and_never_replaced() {
         let dir = std::env::temp_dir().join(format!("weft-identity-{}", std::process::id()));

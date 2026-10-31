@@ -106,7 +106,7 @@ impl World {
     pub fn look_at(&self, id: u64, max: f64, liquids: bool) -> Option<LookAt> {
         let (mut pos, mut face, mut frame) = ([0; 3], 0, 0);
         let s = unsafe { (host().entity_look_at)(self.raw(), id, max, liquids as u32, &mut pos, &mut face, &mut frame) };
-        (s != 0).then_some(LookAt { pos, face, state: s - 1, frame })
+        (s != 0).then(|| LookAt { pos, face, state: s - 1, frame })
     }
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }
@@ -535,6 +535,7 @@ pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Model {
 }
 
 pub struct EntityBuilder<'a> {
+    no_egg: bool,
     reg: &'a mut Registry,
     name: String,
     handle: Option<&'static Entity>,
@@ -619,6 +620,13 @@ impl EntityBuilder<'_> {
         self.width = width;
         self.height = height;
         self.eye = height * EYE_SHARE;
+        self
+    }
+    /// No spawn egg. Every entity has one otherwise, `<name>_spawn_egg`, called after it and looking
+    /// generic until `item/<name>_spawn_egg.png` exists: for what isn't a creature (a projectile, a
+    /// moving platform).
+    pub fn no_egg(mut self) -> Self {
+        self.no_egg = true;
         self
     }
     /// Damage of its melee hits (`World::attack`), like an item's.
@@ -784,6 +792,10 @@ impl Drop for EntityBuilder<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             return;
+        }
+        if !self.no_egg && !self.replace {
+            let mob = Entity::generated(self.name.clone());
+            self.reg.item(crate::Item::generated(format!("{}_spawn_egg", self.name))).spawns(mob).tab(&crate::SPAWN_EGGS);
         }
         let parts: Vec<abi::ModelPart> = self
             .parts
@@ -1112,6 +1124,7 @@ impl Registry {
     pub fn entity<'a>(&'a mut self, kind: &'static Entity) -> EntityBuilder<'a> {
         let d = abi::EntityDesc::DEFAULT;
         EntityBuilder {
+            no_egg: false,
             name: kind.name().to_string(),
             reg: self,
             handle: Some(kind),
@@ -1641,7 +1654,7 @@ impl Drop for MachineBuilder<'_> {
         let kind = Entity::generated(full.clone());
         let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
         look(reg.block(block)).opens(menu);
-        drop(reg.entity(kind).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE));
+        drop(reg.entity(kind).no_egg().flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE));
         for f in self.with.drain(..) {
             f(reg, kind);
         }

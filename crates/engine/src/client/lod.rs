@@ -28,6 +28,8 @@ pub const MAX_LEVEL: u32 = 5;
 /// A tile splits into the level below while nearer than this many of its widths: a cell stays
 /// about the same size on screen (a 32-block cell at 4096 blocks).
 const SPLIT: f64 = 4.0;
+/// Blocks under the land from where distant terrain is left out.
+const UNDERGROUND: i32 = 32;
 /// Tiles asked for and not back yet, at most.
 const IN_FLIGHT: usize = 256;
 
@@ -161,6 +163,8 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
 
 /// The client's distant terrain: which tiles to show, asking for missing ones, taking made ones.
 pub struct Lod {
+    /// The land's height at the camera's column, kept while it stays in it.
+    ground: Option<((u32, IVec2), i32)>,
     jobs: Sender<LodJob>,
     done: (Sender<LodMesh>, Receiver<LodMesh>),
     dim: u32,
@@ -188,6 +192,7 @@ const MASK_MARGIN: i32 = 3;
 impl Lod {
     pub fn new(jobs: Sender<LodJob>) -> Lod {
         Lod {
+            ground: None,
             jobs,
             done: unbounded(),
             dim: u32::MAX,
@@ -220,7 +225,7 @@ impl Lod {
     pub fn update(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, world: &mut super::world::ClientWorld, textures: &super::textures::GameTextures, seed: u64, cam: DVec3, view: i32) {
         let c = content();
         let dim = world.dim;
-        self.update_mask(gpu, render, world, cam, view);
+        self.update_mask(gpu, render, world, seed, cam, view);
         let reach = Self::distance();
         if (dim, seed) != (self.dim, self.seed) || reach == 0 {
             for key in self.ready.drain() {
@@ -236,7 +241,12 @@ impl Lod {
         }
         // Tiles stand in for cubes not shown yet; the inner half of the view is shown long
         // before the edge, where flying outruns the cubes.
-        let hide = (view / 2 * 16).max(0);
+        let mut hide = (view / 2 * 16).max(0);
+        // High up, the view's cubes don't reach the ground: tiles have to fill that in too (where
+        // cubes do show, the mask leaves them out).
+        if self.land_height(c, cam).is_some_and(|land| cam.y > (land + view * 8) as f64) {
+            hide = 0;
+        }
         while let Ok(m) = self.done.1.try_recv() {
             if (m.dim, m.seed) != (self.dim, self.seed) || !self.pending.remove(&m.key) {
                 continue;
@@ -279,7 +289,11 @@ impl Lod {
             }
         }
         render.lod_draw.clear();
-        render.lod_draw.extend(shown);
+        // It is a shell over the land with nothing under it: from deep below, its walls would hang
+        // in the sky. Only rock is that way anyway.
+        if !self.deep_underground(c, cam) {
+            render.lod_draw.extend(shown);
+        }
         let gone: Vec<TileKey> = self.ready.iter().copied().filter(|k| !keep.contains(k)).collect();
         for key in gone {
             self.ready.remove(&key);
@@ -288,9 +302,25 @@ impl Lod {
         self.request();
     }
 
+    /// Well under the land at the camera's column, so its sky can't be seen. Near the surface a cave
+    /// mouth or a ravine still looks out over the distance.
+    fn deep_underground(&mut self, c: &Content, cam: DVec3) -> bool {
+        self.land_height(c, cam).is_some_and(|land| cam.y < (land - UNDERGROUND) as f64)
+    }
+
+    /// How high the land is at the camera's column.
+    fn land_height(&mut self, c: &Content, cam: DVec3) -> Option<i32> {
+        let at = IVec2::new(cam.x.floor() as i32, cam.z.floor() as i32);
+        if self.ground.is_none_or(|g| g.0 != (self.dim, at)) {
+            let height = c.dims[self.dim as usize].column(self.seed, at.x, at.y).map_or(i32::MIN, |col| col.height);
+            self.ground = Some(((self.dim, at), height));
+        }
+        self.ground.map(|g| g.1).filter(|&h| h != i32::MIN)
+    }
+
     /// Keeps the mask of columns shown by cubes current: columns that changed, and the ones
     /// coming into the window when the camera moved to another column.
-    fn update_mask(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, world: &mut super::world::ClientWorld, cam: DVec3, view: i32) {
+    fn update_mask(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, world: &mut super::world::ClientWorld, seed: u64, cam: DVec3, view: i32) {
         let half = view + MASK_MARGIN;
         let w = 2 * half + 1;
         let center = IVec2::new((cam.x / 16.0).floor() as i32, (cam.z / 16.0).floor() as i32);
@@ -311,7 +341,7 @@ impl Lod {
             for z in -half..=half {
                 for x in -half..=half {
                     let col = center + IVec2::new(x, z);
-                    set(&mut self.mask, col, world.column_shown(col));
+                    set(&mut self.mask, col, world.column_shown(col, seed));
                 }
             }
             self.mask_changed = true;
@@ -322,14 +352,14 @@ impl Lod {
                 for x in -half..=half {
                     let col = center + IVec2::new(x, z);
                     if !inside(col, old) {
-                        self.mask_changed |= set(&mut self.mask, col, world.column_shown(col));
+                        self.mask_changed |= set(&mut self.mask, col, world.column_shown(col, seed));
                     }
                 }
             }
         }
         for col in changed {
             if inside(col, center) {
-                self.mask_changed |= set(&mut self.mask, col, world.column_shown(col));
+                self.mask_changed |= set(&mut self.mask, col, world.column_shown(col, seed));
             }
         }
         render.lod_half = half as u32;

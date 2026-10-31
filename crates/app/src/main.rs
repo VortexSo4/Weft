@@ -41,6 +41,7 @@ fn main() {
     };
     let mut verbose = false;
     let mut log_spec = String::new();
+    let mut server = false;
     let mut pack: Option<PathBuf> = None;
     let mut dist: Option<PathBuf> = None;
     // Options the engine does not know go to mods (`--test furnace`, `--script x.txt`).
@@ -58,6 +59,7 @@ fn main() {
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
             "--no-vsync" => opts.no_vsync = true,
+            "--server" => server = true,
             // Engine shaders and assets live from the source tree in a release build too.
             "--dev" => opts.dev = true,
             "--view" => opts.view = value().parse().ok(),
@@ -79,6 +81,9 @@ fn main() {
         }
     }
     opts.automated = extra.iter().any(|(k, _)| k == "script" || k == "test");
+    if let Some(code) = test_jobs(&extra, &opts.run_dir) {
+        std::process::exit(code);
+    }
     weft_engine::set_launch_options(extra);
     let player_mods = opts.run_dir.join("mods");
     if let Some(dir) = pack {
@@ -112,11 +117,87 @@ fn main() {
     }
     opts.mod_dirs.push(player_mods);
     weft_engine::init_workers();
+    if server {
+        if let Err(e) = weft_engine::dedicated::run(opts) {
+            log::error!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(e) = weft_engine::run(vulkan, opts) {
         log::error!("{e}");
         std::process::exit(1);
     }
     std::process::exit(weft_engine::exit_code());
+}
+
+/// `--test all` runs in several processes at once, each with its own run folder (`--jobs N`, 1 for
+/// one after the other, also what naming tests does unless asked). Each takes every Nth test
+/// (`testkit`, `--test-shard`); what they leave is put together as a single run would have it.
+fn test_jobs(extra: &[(String, String)], run_dir: &std::path::Path) -> Option<i32> {
+    let option = |name: &str| extra.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+    if option("test-shard").is_some() {
+        return None;
+    }
+    let test = option("test")?;
+    let auto = (std::thread::available_parallelism().map_or(1, |n| n.get()) / 4).clamp(1, 6);
+    let jobs = option("jobs").and_then(|j| j.parse().ok()).unwrap_or(if test == "all" { auto } else { 1 });
+    if jobs < 2 || test == "list" {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    let exe = std::env::current_exe().ok()?;
+    let mut dirs: Vec<PathBuf> = (0..jobs).map(|i| run_dir.join("test-jobs").join(i.to_string())).collect();
+    let spawn = |shard: &str, dir: &PathBuf| {
+        let _ = std::fs::create_dir_all(dir);
+        let log = std::fs::File::create(dir.join("output.log")).ok()?;
+        let mut c = std::process::Command::new(&exe);
+        c.args(["--test", test, "--test-shard", shard, "--run-dir"]).arg(dir).stdout(log).stderr(std::process::Stdio::null());
+        for (k, v) in extra.iter().filter(|(k, _)| k != "test" && k != "jobs") {
+            c.arg(format!("--{k}"));
+            if !v.is_empty() {
+                c.arg(v);
+            }
+        }
+        c.spawn().ok()
+    };
+    let children: Vec<_> = dirs.iter().enumerate().map(|(i, dir)| spawn(&format!("{i}/{jobs}"), dir)).collect();
+    let code = |c: Option<std::process::Child>| c.and_then(|mut c| c.wait().ok()).and_then(|s| s.code()).unwrap_or(1);
+    let mut codes: Vec<i32> = children.into_iter().map(code).collect();
+    // What measures how quick the game is can't share the machine: last, on its own.
+    dirs.push(run_dir.join("test-jobs").join("alone"));
+    codes.push(code(spawn("alone", &dirs[jobs])));
+    // A crashed process has no report, and its tests didn't pass.
+    let shots = run_dir.join("test-shots");
+    let _ = std::fs::remove_dir_all(&shots);
+    let _ = std::fs::create_dir_all(&shots);
+    let (mut passed, mut failed, mut details, mut crashed) = (0, 0, String::new(), 0);
+    for (i, dir) in dirs.iter().enumerate() {
+        for e in std::fs::read_dir(dir.join("test-shots")).into_iter().flatten().flatten() {
+            let _ = std::fs::rename(e.path(), shots.join(e.file_name()));
+        }
+        let report = std::fs::read_to_string(dir.join("test-reports/report.txt")).unwrap_or_default();
+        let counts: Vec<i32> = report.lines().next().unwrap_or("").split_whitespace().filter_map(|w| w.parse().ok()).collect();
+        if let ([p, f], true) = (counts.as_slice(), codes[i] >= 0 && !report.is_empty()) {
+            (passed, failed) = (passed + p, failed + f);
+            details.push_str(report.split_once('\n').map_or("", |r| r.1));
+        } else {
+            crashed += 1;
+            details.push_str(&format!("\nFAIL process {i} ended without a report, see {}\n", dir.join("output.log").display()));
+        }
+    }
+    let head = format!("testkit report: {passed} passed, {failed} failed, {:.1} s, {jobs} at once\n", started.elapsed().as_secs_f32());
+    let reports = run_dir.join("test-reports");
+    let _ = std::fs::create_dir_all(&reports);
+    let _ = std::fs::write(reports.join("report.txt"), format!("{head}{details}"));
+    print!("{head}");
+    for l in details.lines().scan(false, |in_fail, l| {
+        *in_fail = if l.starts_with("FAIL") { true } else if l.starts_with("PASS") { false } else { *in_fail };
+        Some(in_fail.then_some(l))
+    }).flatten() {
+        println!("{l}");
+    }
+    Some(failed + crashed)
 }
 
 fn subdirs(dir: &std::path::Path) -> Vec<PathBuf> {

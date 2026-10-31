@@ -17,6 +17,7 @@ pub mod diag;
 pub mod host;
 pub mod hud;
 pub mod hud_editor;
+pub mod dedicated;
 pub mod input;
 pub mod log;
 pub mod loot;

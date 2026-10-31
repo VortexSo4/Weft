@@ -548,3 +548,97 @@ pub async fn attack_indicator(t: T) -> R {
     t.op("attr_rm me core:block_reach no_reach").await?;
     Ok(())
 }
+
+/// Where the ground starts on two columns of the picture; a tilted view has them differ.
+fn tilt(shot: &crate::runner::Shot) -> f32 {
+    let horizon = |x: f32| (0..450).map(|i| 0.1 + i as f32 / 450.0 * 0.8).find(|&y| probe::grass(shot.at(x, y))).unwrap_or(0.9);
+    horizon(0.1) - horizon(0.9)
+}
+
+/// Third person shakes like first: from a hit, and from walking.
+pub async fn third_person_shakes(t: T) -> R {
+    t.flat().await?;
+    t.c().look(0.0, 0.0);
+    t.press("core:perspective");
+    t.secs(0.5).await?;
+    let still = tilt(&t.shot("still").await?);
+    t.check(still.abs() < 0.003, format!("level standing still: {still}"));
+    t.hold("core:forward", 2.0);
+    t.secs(0.3).await?;
+    let mut range = (f32::MAX, f32::MIN);
+    for i in 0..10 {
+        let v = tilt(&t.shot(&format!("walking{i}")).await?);
+        range = (range.0.min(v), range.1.max(v));
+    }
+    t.note(format!("tilt walking: {:.4} to {:.4}", range.0, range.1));
+    t.check(range.1 - range.0 > 0.001, format!("walking sways the view: {range:?}"));
+    t.secs(1.0).await?;
+    let s = t.state().pos;
+    t.c().teleport([s[0], s[1] + 8.0, s[2]]);
+    t.until("hurt by the fall", Duration::from_secs(5), |t| t.state().health < 20.0).await?;
+    let mut most = 0.0f32;
+    for i in 0..4 {
+        most = most.max(tilt(&t.shot(&format!("hurt{i}")).await?).abs());
+    }
+    t.note(format!("tilt when hit: {most:.4}"));
+    t.check(most > 0.01, format!("a hit jolts the view: {most}"));
+    t.press("core:perspective");
+    t.press("core:perspective");
+    Ok(())
+}
+
+/// A broken block's pieces fly out to the sides, past where it stood, also when the client hears
+/// of the dust before the block is gone.
+pub async fn block_dust_scatters(t: T) -> R {
+    t.flat().await?;
+    let b = add(t.feet(), [3, 3, 0]);
+    t.set(b, "stone").await?;
+    t.until("the block on the client", Duration::from_secs(2), |t| t.c().block(b).is_some_and(|s| s != 0)).await?;
+    t.look_at(b);
+    t.secs(0.3).await?;
+    // Darker than the sky and any cloud.
+    let piece = |c: probe::C| c.iter().all(|&v| v < 170);
+    let sides = |s: &crate::runner::Shot| [s.share(0.30, 0.3, 0.42, 0.7, piece), s.share(0.58, 0.3, 0.70, 0.7, piece)];
+    let before = sides(&t.shot("before").await?);
+    t.op(&format!("break {} {} {}", b[0], b[1], b[2])).await?;
+    t.secs(0.25).await?;
+    let shot = t.shot("after").await?;
+    let after = sides(&shot);
+    t.note(format!("pieces at the sides: {before:?} then {after:?}"));
+    t.check(after[0] > before[0] + 0.0005, format!("pieces on the left: {before:?} then {after:?}"));
+    t.check(after[1] > before[1] + 0.0005, format!("pieces on the right: {before:?} then {after:?}"));
+    // None stay black from having started where the block was, with no light in it.
+    let black = shot.share(0.3, 0.2, 0.7, 0.8, |c| c.iter().all(|&v| v < 30));
+    t.check(black < 0.0002, format!("black pieces: {black}"));
+    Ok(())
+}
+
+/// From high above, where the view's cubes don't reach the ground, it is land all the way under
+/// the camera, not a hole of sky.
+pub async fn distant_terrain_from_above(t: T) -> R {
+    static VIEW: Config<i32> = Config::named("core:view_distance");
+    static LOD: Config<i32> = Config::named("core:lod_distance");
+    let before = (VIEW.get(), LOD.get());
+    VIEW.set(8);
+    LOD.set(256);
+    let out = async {
+        t.world(5).await?;
+        t.idle().await?;
+        t.op("mode spectator").await?;
+        let s = t.state().pos;
+        t.c().teleport([s[0], 1024.0, s[2]]);
+        t.c().look(0.0, -89.0);
+        t.until("distant terrain made", Duration::from_secs(20), |t| t.state().lod_tiles > 50 && t.state().lod_pending == 0).await?;
+        t.secs(0.5).await?;
+        let shot = t.shot("down").await?;
+        // The sky's pale blue; a cloud may be in the way, which is white.
+        let sky = shot.share(0.44, 0.42, 0.56, 0.58, |c| c[2] > 200 && c[0] > 120 && c[0] < 215);
+        t.note(format!("sky under the camera: {sky:.3}"));
+        t.check(sky < 0.05, format!("a hole in the land: {sky:.3}"));
+        Ok(())
+    }
+    .await;
+    VIEW.set(before.0);
+    LOD.set(before.1);
+    out
+}

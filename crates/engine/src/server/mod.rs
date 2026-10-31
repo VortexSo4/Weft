@@ -62,6 +62,10 @@ pub struct ServerConfig {
     pub seed: u64,
     /// View radius in cubes, sideways and up and down alike.
     pub view_radius: i32,
+    /// `--server`: nobody plays on this machine, so nobody owns the world by connecting first.
+    pub dedicated: bool,
+    /// Who may join: keys, one a line. No file, anyone.
+    pub whitelist: Option<std::path::PathBuf>,
 }
 
 pub struct Player {
@@ -194,6 +198,8 @@ pub struct Server {
 /// Handle the client side uses to reach a running server thread.
 pub struct ServerHandle {
     pub connect: Sender<ServerConn>,
+    /// Lines typed into a dedicated server.
+    pub console: Sender<String>,
     pub shared: Arc<Shared>,
     stop: Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -251,6 +257,7 @@ impl Drop for ServerHandle {
 pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
     let (connect, incoming) = unbounded();
     let (stop, stop_rx) = unbounded::<()>();
+    let (console, console_rx) = unbounded::<String>();
     let shared = Arc::new(Shared::default());
     let sh = shared.clone();
     let thread = std::thread::Builder::new()
@@ -261,6 +268,9 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
+                }
+                while let Ok(line) = console_rx.try_recv() {
+                    server.console(&line);
                 }
                 if server.shared.paused.load(Ordering::Relaxed) {
                     server.idle();
@@ -286,10 +296,41 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
             server.shutdown();
         })
         .expect("spawning server thread");
-    ServerHandle { connect, shared, stop, thread: Some(thread) }
+    ServerHandle { connect, console, shared, stop, thread: Some(thread) }
 }
 
 impl Server {
+    /// A line typed into a dedicated server. The answers go to the log, which is what it shows.
+    fn console(&mut self, line: &str) {
+        let mut words = line.split_whitespace();
+        let command = words.next().unwrap_or("");
+        let name = words.next().unwrap_or("");
+        let find = |s: &Self| s.players.iter().position(|p| p.joined && p.name == name);
+        match command {
+            "" => {}
+            "list" => {
+                let names: Vec<&str> = self.players.iter().filter(|p| p.joined).map(|p| p.name.as_str()).collect();
+                log::info!("{} online: {}", names.len(), names.join(", "));
+            }
+            "say" => {
+                let text = line.trim_start().strip_prefix("say").unwrap_or("").trim().to_string();
+                let msg = Msg::new("chat.message", vec![Arg::Text("Server".into()), Arg::Text(text)]);
+                for p in &mut self.players {
+                    p.conn.send(ToClient::Chat(msg.clone()));
+                }
+            }
+            "op" | "deop" => match find(self) {
+                Some(pi) => {
+                    let level = if command == "deop" { abi::permission::EVERYONE } else { words.next().and_then(|l| l.parse().ok()).unwrap_or(abi::permission::GAME_MASTER).min(abi::permission::OWNER) };
+                    self.set_permission(pi, level);
+                    log::info!("{name} now has permission level {level}");
+                }
+                None => log::info!("{name:?} is not online"),
+            },
+            _ => log::info!("commands here: stop, list, say <text>, op <player> [level], deop <player>"),
+        }
+    }
+
     pub fn new(cfg: ServerConfig, incoming: Receiver<ServerConn>, storage: Option<Storage>, shared: Arc<Shared>) -> Server {
         let c = content();
         let next_id = Arc::new(AtomicU64::new(storage.as_ref().map_or(1, |s| s.meta.next_entity.max(1))));

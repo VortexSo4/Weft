@@ -238,6 +238,9 @@ pub mod comp {
     pub const ATTACK_SPEED: &str = "attack_speed";
     /// Item: a full swing standing on the ground also hits what stands next to the target.
     pub const SWEEPS: &str = "sweeps";
+    /// On an item: the entity it is the spawn egg of, by name. It is called after it unless it has a
+    /// name of its own, and looks generic without a texture of its own.
+    pub const SPAWN_EGG: &str = "spawn_egg";
     /// On an item: in creative it doesn't break blocks (a sword). Client and server both read it.
     pub const NO_CREATIVE_BREAK: &str = "no_creative_break";
     /// On a biome: rain falls as snow there.
@@ -2369,11 +2372,14 @@ pub struct ParticleBurst {
     pub velocity: [f32; 3],
     /// Random extra velocity up to this, in any direction.
     pub speed: f32,
+    /// Non-zero: each flies away from the middle of the burst, more or less, like the pieces of a
+    /// broken block, instead of in any direction.
+    pub outward: u32,
     pub count: u32,
     /// Block state the textureless kinds take their texture from.
     pub block: u32,
 }
-defaults!(ParticleBurst { kind: 0, pos: [0.0; 3], spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, count: 1, block: 0 });
+defaults!(ParticleBurst { kind: 0, pos: [0.0; 3], spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, outward: 0, count: 1, block: 0 });
 
 /// Particle kinds the engine itself uses.
 pub mod particle {
@@ -2916,6 +2922,8 @@ pub struct ClientState {
     pub inserted: u64,
     pub insert_us: f32,
     /// Finished `client_op::BENCH` runs, and the numbers of the last one.
+    /// How much walking shakes the view now, 0 standing, in the air or swimming.
+    pub bob: f32,
     pub benches: u32,
     pub bench_fps: f32,
     pub bench_avg_ms: f32,
@@ -2968,6 +2976,7 @@ defaults!(ClientState {
     gen_us: 0.0,
     inserted: 0,
     insert_us: 0.0,
+    bob: 0.0,
     benches: 0,
     bench_fps: 0.0,
     bench_avg_ms: 0.0,

@@ -43,6 +43,8 @@ pub fn register(r: &mut Registry) {
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
     r.item(&BUCKET).max_stack(16).tab(&crate::tabs::TOOLS);
     r.set("lava_bucket", &FUEL, 20000);
+    r.tag("buckets/lava", &["lava_bucket"]);
+    r.tag("bread", &["bread"]);
 
     for (name, hunger, saturation, tag) in [
         ("apple", 4, 2.4, ""),
@@ -59,6 +61,7 @@ pub fn register(r: &mut Registry) {
         ("spider_eye", 2, 3.2, ""),
     ] {
         let i = r.item(Item::generated(name.into())).set(&FOOD, Food { hunger, saturation }).use_ticks(32).on_use(base_api::eat).tab(&crate::tabs::FOOD);
+        let i = if tag.starts_with("cooked_meat/") { i.tag("cooked_meat") } else { i };
         if !tag.is_empty() {
             i.tag(tag);
         }

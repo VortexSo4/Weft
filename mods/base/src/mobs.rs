@@ -132,6 +132,7 @@ pub fn register(r: &mut Registry) {
         }
     });
     r.entity(&ZOMBIE)
+        .tag("hostile")
         .sound("ambient").sound("hurt").sound("death")
         .size(0.6, 1.95)
         .health(20.0)
@@ -143,6 +144,7 @@ pub fn register(r: &mut Registry) {
         .attack_damage(3.0)
         .goals(hostile(false));
     r.entity(&SPIDER)
+        .tag("hostile")
         .sound("ambient").sound("hurt").sound("death")
         .size(1.3, 0.9)
         .health(16.0)
@@ -155,6 +157,7 @@ pub fn register(r: &mut Registry) {
     r.entity_component(&FUSE, 0u32, 0);
     r.entity_component(&SHOOTER, 0u64, 0);
     r.entity(&CREEPER)
+        .tag("hostile")
         .size(0.6, 1.7)
         .health(20.0)
         .speed(2.5)
@@ -164,6 +167,7 @@ pub fn register(r: &mut Registry) {
         .attach(&FUSE)
         .goals(creeper());
     r.entity(&SKELETON)
+        .tag("hostile")
         .size(0.6, 1.99)
         .health(20.0)
         .speed(2.5)
@@ -174,6 +178,7 @@ pub fn register(r: &mut Registry) {
         .attach(&FUSE)
         .goals(skeleton());
     r.entity(&ARROW)
+        .no_egg()
         .size(0.5, 0.5)
         .unpushable()
         .health(1.0)
@@ -182,6 +187,7 @@ pub fn register(r: &mut Registry) {
         .attach(&SHOOTER)
         .goals(ai::Goals::new().then(arrow_flies));
     r.entity(&SHEEP)
+        .tag("livestock")
         .size(0.9, 1.3)
         .health(8.0)
         .speed(2.3)
@@ -191,6 +197,7 @@ pub fn register(r: &mut Registry) {
         .goals(passive())
         .on_hurt(panic);
     r.entity(&CHICKEN)
+        .tag("livestock")
         .size(0.4, 0.7)
         .health(4.0)
         .speed(2.5)
@@ -201,6 +208,7 @@ pub fn register(r: &mut Registry) {
         .goals(passive_chicken())
         .on_hurt(panic);
     r.entity(&PIG)
+        .tag("livestock")
         .sound("ambient").sound("hurt").sound("death")
         .size(0.9, 0.9)
         .health(10.0)
@@ -211,6 +219,7 @@ pub fn register(r: &mut Registry) {
         .goals(passive())
         .on_hurt(panic);
     r.entity(&COW)
+        .tag("livestock")
         .sound("ambient").sound("hurt").sound("death")
         .size(0.9, 1.3)
         .health(10.0)

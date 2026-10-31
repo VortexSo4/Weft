@@ -439,9 +439,13 @@ pub async fn fall_damage(t: T) -> R {
     t.c().teleport([s.pos[0], s.pos[1] + 12.0, s.pos[2]]);
     t.until("falling", Duration::from_secs(5), |t| !t.flag(client::client_flags::ON_GROUND)).await?;
     t.until("landed", Duration::from_secs(10), |t| t.flag(client::client_flags::ON_GROUND)).await?;
-    t.secs(0.5).await?;
-    let hp = t.state().health;
-    // 11 on landing, and full and saturated it heals fast (a point in half a second).
+    // The lowest it gets: full and saturated it heals fast, a point in half a second.
+    let mut hp = f32::MAX;
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(500) {
+        hp = hp.min(t.state().health);
+        t.frames(1).await?;
+    }
     t.check((10.0..=13.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
     Ok(())
 }
@@ -1057,4 +1061,250 @@ pub async fn creative_sword(t: T) -> R {
     t.secs(0.1).await?;
     t.press("core:attack");
     t.until("a pickaxe breaks it", Duration::from_secs(2), |t| t.c().block(b) == Some(0)).await
+}
+
+/// Advancements go by tags: new food and mobs count without the list knowing them.
+pub async fn advancements_by_tags(t: T) -> R {
+    use weft_sdk::Tag;
+    fn made(t: &T) -> u64 {
+        t.c().view().component(&base_api::ADVANCEMENTS).map_or(0, |a| a.done)
+    }
+    for food in ["base:cooked_beef", "base:cooked_porkchop", "base:cooked_chicken", "base:cooked_mutton"] {
+        t.check(Item::lookup(food).is_some_and(|i| Tag::named("cooked_meat").on_item(i)), format!("{food} is cooked meat"));
+    }
+    t.flat().await?;
+    t.cmd("/feed 5").await?;
+    t.op("put me 0 cooked_mutton 1").await?;
+    t.c().select(0);
+    t.c().look(0.0, 60.0);
+    t.secs(0.2).await?;
+    let before = made(&t);
+    t.hold("core:use", 2.5);
+    t.until("eating mutton counts", Duration::from_secs(5), |t| made(t).count_ones() > before.count_ones()).await?;
+    let f = t.feet();
+    let chicken = t.op(&format!("spawn base:chicken {} {} {}", f[0] + 3, f[1], f[2])).await?;
+    t.secs(0.2).await?;
+    let before = made(&t);
+    t.op(&format!("hurt {} 100", chicken.trim())).await?;
+    t.until("killing a chicken counts", Duration::from_secs(3), |t| made(t).count_ones() > before.count_ones()).await
+}
+
+/// Every item and mob of the base game has its name in every language it comes with.
+pub async fn names_translated(t: T) -> R {
+    // From a process of several, the run folder is deeper down.
+    let run = t.c().run_dir();
+    let Some(game) = std::path::Path::new(&run).ancestors().find(|d| d.join("mods/base/assets/lang").is_dir()) else { return Err("no base mod sources".into()) };
+    let root = game.join("mods/base/assets/lang").display().to_string();
+    for lang in ["en_us", "ru_ru"] {
+        let text = std::fs::read_to_string(format!("{root}/{lang}.lang")).map_err(|e| e.to_string())?;
+        let has = |key: String| text.lines().any(|l| l.split(" = ").next() == Some(key.as_str()));
+        let mut missing = Vec::new();
+        for id in 1.. {
+            let name = item_name(id);
+            if name.is_empty() {
+                break;
+            }
+            if let Some(n) = name.strip_prefix("base:").filter(|n| !n.ends_with("_spawn_egg")) {
+                if !has(format!("item.base.{n}")) && !has(format!("block.base.{n}")) {
+                    missing.push(name.to_string());
+                }
+            }
+        }
+        for id in 0.. {
+            let name = name_of(weft_sdk::abi::entry_kind::ENTITY, id);
+            if name.is_empty() {
+                break;
+            }
+            if let Some(n) = name.strip_prefix("base:") {
+                // Machines' entities are called what their block is.
+                if !has(format!("entity.base.{n}")) && !has(format!("block.base.{n}")) {
+                    missing.push(name.to_string());
+                }
+            }
+        }
+        t.check(missing.is_empty(), format!("no name in {lang}: {}", missing.join(" ")));
+    }
+    Ok(())
+}
+
+/// Air comes back in creative too, where nothing takes it.
+pub async fn air_in_creative(t: T) -> R {
+    fn air(t: &T) -> f32 {
+        t.c().view().component(&base_api::HUNGER).map_or(0.0, |h| h.air)
+    }
+    t.flat().await?;
+    let f = t.feet();
+    t.fill(add(f, [-2, 0, -2]), add(f, [2, 4, 2]), "water").await?;
+    t.secs(2.0).await?;
+    t.check(air(&t) < 300.0, format!("air under water: {}", air(&t)));
+    t.op("mode creative").await?;
+    t.until("air back in creative, still under water", Duration::from_secs(5), |t| air(t) >= 300.0).await
+}
+
+/// Swimming doesn't bob the view, touching the bottom or not; walking does.
+pub async fn swimming_no_bob(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.c().look(0.0, 0.0);
+    t.hold("core:forward", 1.0);
+    t.secs(0.4).await?;
+    let (mut walked, mut swum, mut touching, mut samples) = (0.0f32, 0.0f32, 0, 0);
+    for _ in 0..40 {
+        t.frames(1).await?;
+        walked = walked.max(t.state().bob);
+    }
+    t.check(walked > 0.02, format!("walking bobs: {walked}"));
+    t.secs(1.0).await?;
+    // Two deep, so swimming scrapes the bottom.
+    t.fill(add(f, [-8, 0, -60]), add(f, [8, 1, 8]), "water").await?;
+    t.secs(0.5).await?;
+    let s = t.state().pos;
+    t.c().teleport([s[0], f[1] as f64 + 0.1, f[2] as f64 + 0.5]);
+    t.secs(0.3).await?;
+    t.c().look(0.0, -30.0);
+    t.hold("core:sprint", 4.0);
+    t.hold("core:forward", 4.0);
+    t.secs(1.0).await?;
+    for _ in 0..120 {
+        t.frames(1).await?;
+        if let Some(me) = t.c().view().me().filter(|m| m.pose == abi::pose::SWIM) {
+            samples += 1;
+            touching += (me.on_ground != 0) as u32;
+            swum = swum.max(t.state().bob);
+        }
+    }
+    t.note(format!("swimming frames {samples}, touching the bottom {touching}, bob {swum}"));
+    t.check(samples > 20, format!("swam for {samples} frames"));
+    t.check(swum < 0.01, format!("swimming bobs: {swum}"));
+    Ok(())
+}
+
+/// A toast goes with the GUI on F1, and doesn't follow the player out of the world.
+pub async fn toast_with_the_gui(t: T) -> R {
+    let toast = |s: &crate::runner::Shot| s.share(0.78, 0.0, 1.0, 0.09, |c| c[0] > 200 && c[1] > 170 && c[2] < 170);
+    t.flat().await?;
+    t.op("put me 0 iron_ingot 1").await?;
+    t.op("put me 1 gold_ingot 1").await?;
+    t.c().look(0.0, -40.0);
+    t.secs(1.5).await?;
+    let shown = toast(&t.shot("shown").await?);
+    t.check(shown > 0.0005, format!("the toast shows: {shown}"));
+    t.press("core:hide_hud");
+    t.frames(3).await?;
+    let hidden = toast(&t.shot("hidden").await?);
+    t.check(hidden < 0.0001, format!("F1 hides it: {hidden}"));
+    // Let go first, or the second press is the same one, and the GUI stays hidden for what's next.
+    t.secs(0.2).await?;
+    t.press("core:hide_hud");
+    t.secs(0.2).await?;
+    let back = toast(&t.shot("back").await?);
+    t.check(back > 0.0005, format!("and it is back: {back}"));
+    // The second is still waiting behind the first, and must not come in the next world.
+    t.c().leave_world();
+    t.screen("core:title").await?;
+    t.frames(5).await?;
+    let title = toast(&t.shot("title").await?);
+    t.check(title < 0.0001, format!("none on the title screen: {title}"));
+    t.c().open_world(&format!("test-{}", t.name()), 1);
+    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
+    t.loaded().await?;
+    t.c().look(0.0, -40.0);
+    t.frames(3).await?;
+    let again = toast(&t.shot("again").await?);
+    t.check(again < 0.0001, format!("none from the world before: {again}"));
+    Ok(())
+}
+
+/// Every entity has an egg with nothing registered for it, a mod's too, unless it says otherwise.
+/// One puts its mob on the side of the block it is used on, and is used up outside creative.
+pub async fn spawn_eggs(t: T) -> R {
+    t.check(Item::lookup("testmod:wisp_spawn_egg").is_some(), "a mod's mob has one");
+    t.check(Item::lookup("base:arrow_spawn_egg").is_none(), "no_egg() has none");
+    t.check(Item::lookup("base:furnace_spawn_egg").is_none(), "a machine's block entity has none");
+    t.flat().await?;
+    let f = t.feet();
+    let ground = add(f, [2, -1, 0]);
+    t.look_at(ground);
+    t.op("put me 0 pig_spawn_egg 2").await?;
+    t.c().select(0);
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    t.check_eq(t.slot("me", 0).await?.1, 1, "one egg used up");
+    t.laid_out(&["text:Pig Spawn Egg"]);
+    t.op("mode creative").await?;
+    t.secs(0.3).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.slot("me", 0).await?.1, 1, "none in creative");
+    let near = t.op(&format!("near {} {} {} 8", f[0], f[1], f[2])).await?;
+    t.check(near.matches("base:pig").count() == 2, format!("two pigs: {near}"));
+    Ok(())
+}
+
+/// A game with no window, reached by address: nobody owns it by connecting first, `op` from its
+/// console makes someone more, its whitelist keeps out who isn't on it, `stop` saves and leaves.
+pub async fn dedicated_server(t: T) -> R {
+    use std::io::Write;
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+        }
+    }
+    let port = 30000 + (std::process::id() % 20000) as u16;
+    let dir = format!("{}/test-server", t.c().run_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+    static SPARKS: Config<u32> = Config::named("testmod:wisp_sparks");
+    let own_sparks = SPARKS.get();
+    std::fs::create_dir_all(format!("{dir}/config")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/testmod.txt"), format!("wisp_sparks = {}\n", own_sparks + 3)).map_err(|e| e.to_string())?;
+    let start = || -> Result<Child, String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        std::process::Command::new(exe)
+            .args(["--server", "--world", "w", "--seed", "1", "--view", "4", "--port", &port.to_string(), "--run-dir", &dir])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(Child)
+            .map_err(|e| e.to_string())
+    };
+    let listening = |t: &T| {
+        let _ = t;
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    };
+    let mut server = start()?;
+    t.until("the server listening", Duration::from_secs(30), listening).await?;
+    t.c().join(&format!("127.0.0.1:{port}"));
+    t.until("joined by address", Duration::from_secs(30), |t| t.flag(client::client_flags::JOINED)).await?;
+    t.loaded().await?;
+    t.check_eq(SPARKS.get(), own_sparks + 3, "the server's setting counts while on it");
+    let refused = t.cmd("/time query").await?;
+    t.check(!refused.contains("time is"), format!("the first to connect owns nothing: {refused}"));
+    static NAME: TextConfig = TextConfig::named("core:name");
+    let mut console = server.0.stdin.take().ok_or("no console")?;
+    writeln!(console, "op {}", NAME.get()).map_err(|e| e.to_string())?;
+    let _ = console.flush();
+    t.secs(0.5).await?;
+    let allowed = t.cmd("/time query").await?;
+    t.check(allowed.contains("time is"), format!("op from the console: {allowed}"));
+    t.c().leave_world();
+    t.screen("core:title").await?;
+    t.check_eq(SPARKS.get(), own_sparks, "the player's own setting after leaving");
+    writeln!(console, "stop").map_err(|e| e.to_string())?;
+    let _ = console.flush();
+    t.until("the server stopped", Duration::from_secs(20), |_| server.0.try_wait().ok().flatten().is_some()).await?;
+    t.check(std::fs::read_dir(format!("{dir}/saves/w/players")).is_ok_and(|mut d| d.next().is_some()), "the player was saved");
+
+    std::fs::create_dir_all(format!("{dir}/config")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/whitelist.txt"), "somebody else\n").map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/config/disabled_mods.txt"), "").map_err(|e| e.to_string())?;
+    let _server = start()?;
+    t.until("the server listening again", Duration::from_secs(30), listening).await?;
+    t.c().join(&format!("127.0.0.1:{port}"));
+    t.screen("core:message").await?;
+    t.check(!t.flag(client::client_flags::IN_WORLD), "not on the whitelist, not in");
+    t.c().close_screen();
+    Ok(())
 }

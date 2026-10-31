@@ -58,6 +58,7 @@ pub fn all() -> Vec<TestDef> {
         world::edit_while_loading,
         world::gpu_terrain,
         world::distant_terrain,
+        world::distant_terrain_underground,
         gameplay::crafting_table_tags,
         gameplay::sprint_and_sneak_modes,
         gameplay::mining_and_wear,
@@ -75,6 +76,14 @@ pub fn all() -> Vec<TestDef> {
         gameplay::bucket,
         gameplay::advancements,
         gameplay::beds,
+        gameplay::spawn_eggs,
+        gameplay::dedicated_server,
+        ui::mods_switch,
+        gameplay::toast_with_the_gui,
+        gameplay::advancements_by_tags,
+        gameplay::names_translated,
+        gameplay::air_in_creative,
+        gameplay::swimming_no_bob,
         gameplay::battery,
         gameplay::burning,
         gameplay::entity_fields,
@@ -138,6 +147,9 @@ pub fn all() -> Vec<TestDef> {
         looks::particles,
         looks::sky,
         looks::clouds,
+        looks::distant_terrain_from_above,
+        looks::third_person_shakes,
+        looks::block_dust_scatters,
         looks::attack_indicator,
         looks::shaders_and_glow,
         looks::texture_seams,
@@ -166,6 +178,13 @@ pub fn all() -> Vec<TestDef> {
 /// Measurements without a verdict worth failing a run over; `--test bench`.
 pub fn bench() -> Vec<TestDef> {
     crate::tests![world::fly_load, world::load_benchmark, world::item_farm, looks::particle_crowd, world::crater]
+}
+
+/// A process's first world is slow to open and to settle, which timings shouldn't be measuring.
+/// Left out of the report unless it fails.
+pub async fn warm_up(t: T) -> R {
+    t.flat().await?;
+    t.secs(0.5).await
 }
 
 impl T {

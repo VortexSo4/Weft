@@ -4,6 +4,7 @@
 //! `--test bench` the benchmarks), each in a fresh throwaway world, then writes
 //! `run/test-reports/report.txt` and exits with the number of failed tests. Screenshots of the
 //! run go to `run/test-shots/` for looking at; checks never compare pictures with references.
+//! `--test all` runs several at once, `--jobs 1` one by one, `--jobs N` for a number; see the game's `main`.
 //! `--test-keep` keeps the test worlds. `weft --world w --script file.txt` runs a line script (see `script.rs`).
 //! Without those options the mod only registers its message channels.
 
@@ -69,7 +70,31 @@ fn init(r: &mut Registry) {
     });
 }
 
+/// Tests of how quick the game is, which other processes on the machine would fail.
+const ALONE: &[&str] = &["edit_while_loading", "skiff_smooth"];
+
 /// Builds the queue on the main thread, where the runner lives.
+/// Same conditions on every machine and for every test, whatever the one before left behind (a
+/// failure halfway, or leaving a server, which reads the player's settings back).
+pub(crate) fn same_conditions(c: &Client) {
+    use weft_sdk::settings::*;
+    // The player's packs would change every picture.
+    let packs = !RESOURCE_PACKS.get().is_empty() || !SHADER_PACK.get().is_empty();
+    LANGUAGE.set("en_us");
+    GUI_SCALE.set(2);
+    VIEW_DISTANCE.set(12);
+    FOV.set(70.0);
+    BRIGHTNESS.set(0.5);
+    VSYNC.set(true);
+    RESOURCE_PACKS.set("");
+    SHADER_PACK.set("");
+    DEBUG_GROUPS.set(u32::MAX);
+    DEBUG_LINES.set("");
+    if packs {
+        c.reload_assets();
+    }
+}
+
 fn start(c: &Client) {
     let Some((test, script)) = PLAN.get() else { return };
     if let Some(path) = script {
@@ -85,22 +110,6 @@ fn start(c: &Client) {
         runner::start(vec![runner::TestDef { name, run: Box::new(move |t| Box::pin(script::run(t, src.clone()))) }]);
         return;
     }
-    // Same conditions on every machine; nothing of this is saved.
-    {
-        use weft_sdk::settings::*;
-        LANGUAGE.set("en_us");
-        GUI_SCALE.set(2);
-        VIEW_DISTANCE.set(12);
-        FOV.set(70.0);
-        BRIGHTNESS.set(0.5);
-        VSYNC.set(true);
-        RESOURCE_PACKS.set("");
-        SHADER_PACK.set("");
-        DEBUG_GROUPS.set(u32::MAX);
-        DEBUG_LINES.set("");
-    }
-    // The player's packs would change every picture.
-    c.reload_assets();
     let want = test.as_deref().unwrap_or("all");
     // Benchmarks run by name too, or all of them with `bench`.
     let all = match want {
@@ -126,5 +135,21 @@ fn start(c: &Client) {
         }
         all.into_iter().filter(|t| names.contains(&t.name.as_str())).collect()
     };
+    // One of several processes running them all (see the game's `--jobs`): every Nth.
+    let shard = launch_option("test-shard");
+    let warm = shard.is_some();
+    let mut queue: Vec<runner::TestDef> = match shard {
+        Some(s) if s == "alone" => queue.into_iter().filter(|t| ALONE.contains(&t.name.as_str())).collect(),
+        Some(s) => {
+            let part = |w: Option<&str>| w.and_then(|w| w.parse::<usize>().ok()).unwrap_or(1);
+            let mut w = s.split('/');
+            let (i, n) = (part(w.next()), part(w.next()));
+            queue.into_iter().filter(|t| !ALONE.contains(&t.name.as_str())).enumerate().filter(|(k, _)| k % n == i).map(|(_, t)| t).collect()
+        }
+        None => queue,
+    };
+    if warm {
+        queue.splice(0..0, crate::tests![tests::warm_up]);
+    }
     runner::start(queue);
 }

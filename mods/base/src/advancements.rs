@@ -9,21 +9,21 @@ use std::time::Instant;
 use weft_sdk::*;
 
 use crate::items::ARMOR;
-use crate::mobs::{COW, PIG, SPIDER, ZOMBIE};
 
 pub use base_api::{ADVANCEMENTS, Advancements};
 
-/// What a player has to do. Inventory and position rules are checked once a second, so
-/// anything that ends up in the inventory counts, however it got there.
+/// What a player has to do, by what things are rather than which they are: a mod's mob tagged
+/// `hostile` or food tagged `cooked_meat` counts without anything here knowing of it.
+/// Inventory and position rules are checked once a second, so anything that ends up in the
+/// inventory counts, however it got there.
 enum Rule {
-    Have(&'static Item),
-    HaveTag(&'static Tag),
+    Have(&'static Tag),
     /// Breaks a block with this tag.
     Break(&'static Tag),
     /// Places a block with this tag.
     Place(&'static Tag),
-    Kill(&'static [&'static Entity]),
-    Eat(&'static [&'static Item]),
+    Kill(&'static Tag),
+    Eat(&'static Tag),
     /// Wears at least this many pieces of armor.
     Wear(u32),
     Below(i32),
@@ -34,7 +34,7 @@ enum Rule {
 struct Advancement {
     /// `advancement.base.<id>` and `.desc` in the lang files.
     id: &'static str,
-    icon: &'static str,
+    icon: Item,
     /// Index into `GROUPS`: the screen shows each group as a chain, in the order of `ALL`.
     group: usize,
     rule: Rule,
@@ -44,39 +44,43 @@ struct Advancement {
 const GROUPS: [&str; 4] = ["start", "progress", "food_and_combat", "exploration"];
 
 static LOGS: Tag = Tag::named("logs");
-static TORCHES: Tag = Tag::named("torches");
+static CRAFTING_TABLES: Tag = Tag::named("crafting_tables");
 static PICKAXES: Tag = Tag::named("tools/pickaxe");
+static COBBLESTONE: Tag = Tag::named("cobblestone");
 static SWORDS: Tag = Tag::named("tools/sword");
-static CRAFTING_TABLE: Item = Item::named("crafting_table");
-static FURNACE: Item = Item::named("furnace");
-static COBBLESTONE: Item = Item::named("cobblestone");
-static BREAD: Item = Item::named("bread");
-static LAVA_BUCKET: Item = Item::named("lava_bucket");
-static COOKED_BEEF: Item = Item::named("cooked_beef");
-static COOKED_PORKCHOP: Item = Item::named("cooked_porkchop");
+static FURNACES: Tag = Tag::named("furnaces");
+static TORCHES: Tag = Tag::named("torches");
+static IRON: Tag = Tag::named("ingots/iron");
+static GOLD: Tag = Tag::named("ingots/gold");
+static DIAMONDS: Tag = Tag::named("gems/diamond");
+static BREAD: Tag = Tag::named("bread");
+static LIVESTOCK: Tag = Tag::named("livestock");
+static COOKED_MEAT: Tag = Tag::named("cooked_meat");
+static HOSTILE: Tag = Tag::named("hostile");
+static LAVA_BUCKETS: Tag = Tag::named("buckets/lava");
 
 /// In the order they usually come. The index is the bit in `Advancements::done`, so new ones go
 /// at the end (at most 64).
 static ALL: [Advancement; 19] = [
-    Advancement { id: "timber", icon: "base:oak_log", group: 0, rule: Rule::Break(&LOGS) },
-    Advancement { id: "workbench", icon: "base:crafting_table", group: 0, rule: Rule::Have(&CRAFTING_TABLE) },
-    Advancement { id: "first_pickaxe", icon: "base:wood_pickaxe", group: 0, rule: Rule::HaveTag(&PICKAXES) },
-    Advancement { id: "stone_age", icon: "base:cobblestone", group: 0, rule: Rule::Have(&COBBLESTONE) },
-    Advancement { id: "armed", icon: "base:stone_sword", group: 0, rule: Rule::HaveTag(&SWORDS) },
-    Advancement { id: "furnace", icon: "base:furnace", group: 0, rule: Rule::Have(&FURNACE) },
-    Advancement { id: "light", icon: "base:torch", group: 0, rule: Rule::Place(&TORCHES) },
-    Advancement { id: "iron", icon: "base:iron_ingot", group: 1, rule: Rule::Have(&crate::items::IRON_INGOT) },
-    Advancement { id: "gold", icon: "base:gold_ingot", group: 1, rule: Rule::Have(&crate::items::GOLD_INGOT) },
-    Advancement { id: "suit_up", icon: "base:iron_chestplate", group: 1, rule: Rule::Wear(1) },
-    Advancement { id: "full_armor", icon: "base:diamond_chestplate", group: 1, rule: Rule::Wear(4) },
-    Advancement { id: "diamonds", icon: "base:diamond", group: 1, rule: Rule::Have(&crate::items::DIAMOND) },
-    Advancement { id: "baker", icon: "base:bread", group: 2, rule: Rule::Have(&BREAD) },
-    Advancement { id: "hunter", icon: "base:porkchop", group: 2, rule: Rule::Kill(&[&PIG, &COW]) },
-    Advancement { id: "cook", icon: "base:cooked_beef", group: 2, rule: Rule::Eat(&[&COOKED_BEEF, &COOKED_PORKCHOP]) },
-    Advancement { id: "monster_hunter", icon: "base:rotten_flesh", group: 2, rule: Rule::Kill(&[&ZOMBIE, &SPIDER]) },
-    Advancement { id: "hot_stuff", icon: "base:lava_bucket", group: 1, rule: Rule::Have(&LAVA_BUCKET) },
-    Advancement { id: "deep", icon: "base:diamond_ore", group: 3, rule: Rule::Below(0) },
-    Advancement { id: "summit", icon: "base:snow", group: 3, rule: Rule::Above(180) },
+    Advancement { id: "timber", icon: Item::named("oak_log"), group: 0, rule: Rule::Break(&LOGS) },
+    Advancement { id: "workbench", icon: Item::named("crafting_table"), group: 0, rule: Rule::Have(&CRAFTING_TABLES) },
+    Advancement { id: "first_pickaxe", icon: Item::named("wood_pickaxe"), group: 0, rule: Rule::Have(&PICKAXES) },
+    Advancement { id: "stone_age", icon: Item::named("cobblestone"), group: 0, rule: Rule::Have(&COBBLESTONE) },
+    Advancement { id: "armed", icon: Item::named("stone_sword"), group: 0, rule: Rule::Have(&SWORDS) },
+    Advancement { id: "furnace", icon: Item::named("furnace"), group: 0, rule: Rule::Have(&FURNACES) },
+    Advancement { id: "light", icon: Item::named("torch"), group: 0, rule: Rule::Place(&TORCHES) },
+    Advancement { id: "iron", icon: Item::named("iron_ingot"), group: 1, rule: Rule::Have(&IRON) },
+    Advancement { id: "gold", icon: Item::named("gold_ingot"), group: 1, rule: Rule::Have(&GOLD) },
+    Advancement { id: "suit_up", icon: Item::named("iron_chestplate"), group: 1, rule: Rule::Wear(1) },
+    Advancement { id: "full_armor", icon: Item::named("diamond_chestplate"), group: 1, rule: Rule::Wear(4) },
+    Advancement { id: "diamonds", icon: Item::named("diamond"), group: 1, rule: Rule::Have(&DIAMONDS) },
+    Advancement { id: "baker", icon: Item::named("bread"), group: 2, rule: Rule::Have(&BREAD) },
+    Advancement { id: "hunter", icon: Item::named("porkchop"), group: 2, rule: Rule::Kill(&LIVESTOCK) },
+    Advancement { id: "cook", icon: Item::named("cooked_beef"), group: 2, rule: Rule::Eat(&COOKED_MEAT) },
+    Advancement { id: "monster_hunter", icon: Item::named("rotten_flesh"), group: 2, rule: Rule::Kill(&HOSTILE) },
+    Advancement { id: "hot_stuff", icon: Item::named("lava_bucket"), group: 1, rule: Rule::Have(&LAVA_BUCKETS) },
+    Advancement { id: "deep", icon: Item::named("diamond_ore"), group: 3, rule: Rule::Below(0) },
+    Advancement { id: "summit", icon: Item::named("snow"), group: 3, rule: Rule::Above(180) },
 ];
 
 /// Server to the player who made it: the index into `ALL`.
@@ -115,13 +119,13 @@ pub fn register(r: &mut Registry) {
     r.on(&ENTITY_DIED, |b| {
         let w = b.world();
         for d in b.iter() {
-            grant_where(&w, d.killer, |rule| matches!(rule, Rule::Kill(kinds) if kinds.iter().any(|k| k.id() == d.kind)));
+            grant_where(&w, d.killer, |rule| matches!(rule, Rule::Kill(t) if t.on_entity(d.kind)));
         }
     });
     r.on(&ITEM_USED, |b| {
         let w = b.world();
         for u in b.iter() {
-            grant_where(&w, u.player, |rule| matches!(rule, Rule::Eat(foods) if foods.iter().any(|f| f.id() == u.stack.item)));
+            grant_where(&w, u.player, |rule| matches!(rule, Rule::Eat(t) if t.on_item(u.stack.item)));
         }
     });
 
@@ -152,8 +156,7 @@ fn check_players(w: &World) {
         let worn = inv.find_group(EQUIPMENT_GROUP).map_or(0, |g| (0..g.len()).filter(|&i| ARMOR.on_item(g.get(i).item).is_some()).count() as u32);
         let y = st.pos[1];
         grant_where(w, id, |rule| match *rule {
-            Rule::Have(item) => items.contains(&item.id()),
-            Rule::HaveTag(tag) => items.iter().any(|&i| tag.on_item(i)),
+            Rule::Have(tag) => items.iter().any(|&i| tag.on_item(i)),
             Rule::Wear(n) => worn >= n,
             Rule::Below(min) => y < min as f64,
             Rule::Above(max) => y >= max as f64 && st.on_ground != 0,
@@ -185,6 +188,11 @@ fn client(r: &mut Registry) {
     r.client_packet(&MADE, |_, i| TOASTS.lock().unwrap().push_back((i, None)));
     r.client_frame(|c| {
         let mut toasts = TOASTS.lock().unwrap();
+        // They were about the world just left.
+        if c.state().flags & client::client_flags::JOINED == 0 {
+            toasts.clear();
+            return;
+        }
         let Some((i, shown)) = toasts.front_mut() else { return };
         let Some(adv) = ALL.get(*i as usize) else {
             toasts.pop_front();
@@ -210,7 +218,7 @@ fn client(r: &mut Registry) {
         let text = |x: f32, y: f32, key: &str, args: &[Arg], color: u32, size: f32| c.screen_text((left + x) / gw, (TOAST_MARGIN + y) / gh, key, args, color, size);
         text(TOAST_W / 2.0, 0.0, "advancements.base.toast_box", &[], 0xffffffff, 1.0);
         // An icon in text is as tall as a line: twice the size fills the slot.
-        text(16.0, ICON_Y, "", &[Arg::Item(Item::lookup(adv.icon).unwrap_or(0))], 0xffffffff, 2.0);
+        text(16.0, ICON_Y, "", &[Arg::Item(adv.icon.id())], 0xffffffff, 2.0);
         // The text sits centered in the box right of the icon slot.
         let mid = 30.0 + (TOAST_W - 34.0) / 2.0;
         text(mid, 6.0, "advancement.base.toast", &[], 0xffe070ff, 1.0);
@@ -243,7 +251,7 @@ fn client(r: &mut Registry) {
                             let status = if made { "advancements.base.done" } else { "advancements.base.locked" };
                             let tile = S::row().size(26.0, 26.0).center().tooltip_args("advancements.base.tip", &[Arg::Key(&title), Arg::Key(&desc), Arg::Key(status)]);
                             ui.panel(if made { "advancement_tile_done" } else { "advancement_tile" }, tile, |ui| {
-                                ui.item(Item::lookup(adv.icon).unwrap_or(0), 1, S::default());
+                                ui.item(adv.icon.id(), 1, S::default());
                             });
                         }
                     });
