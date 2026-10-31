@@ -460,7 +460,7 @@ pub fn install_crash_handler(run_dir: &std::path::Path) {
         write_report(&format!("panic{at}: {msg}"));
         previous(info);
     }));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     native::install();
 }
 
@@ -526,5 +526,46 @@ mod native {
         }
         // Let Windows end the process as it would have.
         0
+    }
+}
+
+/// Linux faults arrive as signals rather than an exception filter, so the report is written
+/// from a handler and then the default action is restored and re-raised. Writing a report is
+/// not async-signal-safe (it allocates and locks the log), so like the Windows filter this is
+/// best effort: a fault taken while those locks are held can only be reported as far as it can.
+#[cfg(target_os = "linux")]
+mod native {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub fn install() {
+        unsafe {
+            for sig in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE] {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = handler as *const () as usize;
+                // Reset to the default action on the first delivery, so the re-raise below ends
+                // the process instead of calling this again.
+                action.sa_flags = libc::SA_SIGINFO | libc::SA_RESETHAND;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaction(sig, &action, std::ptr::null_mut());
+            }
+        }
+    }
+
+    extern "C" fn handler(sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+        static ONCE: AtomicBool = AtomicBool::new(false);
+        if !ONCE.swap(true, Ordering::Relaxed) {
+            let name = match sig {
+                libc::SIGSEGV => "segmentation fault",
+                libc::SIGBUS => "bus error",
+                libc::SIGILL => "illegal instruction",
+                libc::SIGFPE => "arithmetic exception",
+                _ => "native signal",
+            };
+            super::write_report(&format!("{name} (signal {sig})"));
+        }
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
     }
 }

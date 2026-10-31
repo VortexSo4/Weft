@@ -336,12 +336,14 @@ impl App {
         }
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         let size = window.inner_size();
+        let cache_dir = self.opts.run_dir.join("cache");
         let mut gpu = (self.factory)(&BackendDesc {
             window: &*window,
             width: size.width,
             height: size.height,
             vsync: settings.vsync(),
             debug: self.opts.gpu_debug,
+            cache_dir: Some(&cache_dir),
         })
         .map_err(|e| e.to_string())?;
 

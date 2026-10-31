@@ -255,6 +255,8 @@ pub struct BackendDesc<'a> {
     pub height: u32,
     pub vsync: bool,
     pub debug: bool,
+    /// Where a backend may keep caches between runs; `None` keeps none.
+    pub cache_dir: Option<&'a std::path::Path>,
 }
 
 pub trait Backend: Send {
