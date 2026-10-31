@@ -71,6 +71,26 @@ pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, E
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
 }
 
+/// Looks at the nearest player within `range` while standing around (vanilla's
+/// LookAtPlayerGoal). The body stays where it is until the head has turned too far. Never takes
+/// over: what comes after it runs. Like everything aimed at players it goes by `visibility`, so
+/// mobs don't look at someone in creative.
+pub fn watch_player(range: f64) -> impl Goal {
+    move |w: &World, id: u64, st: &EntityState| {
+        if !w.navigating(id) {
+            if let Some((_, ps)) = nearest_player(w, st, range) {
+                let (dx, dz) = (ps.pos[0] - st.pos[0], ps.pos[2] - st.pos[2]);
+                let dy = ps.pos[1] + ps.size[2] as f64 - (st.pos[1] + st.size[2] as f64);
+                let mut now = *st;
+                now.yaw = (-dx).atan2(-dz) as f32;
+                now.pitch = dy.atan2((dx * dx + dz * dz).sqrt()) as f32;
+                w.set_entity(id, &now);
+            }
+        }
+        false
+    }
+}
+
 /// Hits the nearest player within `reach` (and less than a body high above or below) with
 /// `World::attack`, which keeps the pace. Never takes over: chasing goes on.
 pub fn melee(reach: f64) -> impl Goal {

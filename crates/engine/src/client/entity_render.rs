@@ -17,11 +17,16 @@ use crate::content::content;
 use crate::physics::Hit;
 use crate::gpu_layout::{GpuBox, Scene};
 
-/// What the first person view holds: the item (or the bare arm), the swing progress and the
-/// walk distance for bobbing.
+/// What the first person view holds: the item (or the bare arm) and how it moves.
 pub struct Hand {
     pub stack: weft_abi::ItemStack,
     pub swing: Option<f32>,
+    /// How far it is lowered, 0..1: while changing items and just after a use.
+    pub lowered: f32,
+    /// Radians the hand lags behind a turning camera: pitch, yaw.
+    pub lag: (f32, f32),
+    /// Holding the use button on it: ticks left, ticks in all.
+    pub using: Option<(f32, f32)>,
     /// The local player's animation started by the server and the player's age, for the `hand`
     /// bone of its keyframes.
     pub anim: Option<(String, f32, bool)>,
@@ -547,7 +552,7 @@ impl EntityRenderer {
         let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-        self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, swing: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
+        self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, head_yaw: 0.0, swing: 0.0, swim: None, attack: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
         let vb = self.preview[frame.slot];
         // Full daylight, no fog.
         let v = Scene { view_proj: proj.to_cols_array_2d(), params: [1e9, 2e9, 1.0, crate::shaders::time()], ..Default::default() };
@@ -573,7 +578,7 @@ impl EntityRenderer {
         scene: &Scene,
         scene_buf: BufferId,
         target: Option<(Hit, DVec3)>,
-        breaking: Option<(IVec3, f32, DVec3)>,
+        breaking: &[(IVec3, f32, DVec3)],
         gizmo_lines: &[super::gizmo::Line],
         gizmo_fills: &[super::gizmo::Fill],
         late: &mut CommandList,
@@ -603,7 +608,8 @@ impl EntityRenderer {
                 continue;
             }
             let lit = shade(e.pos + DVec3::Y * 0.5);
-            let hurt = (e.hurt / 0.4).clamp(0.0, 1.0);
+            // Below zero the model's shader flashes white instead of red.
+            let hurt = if e.flash > 0.0 { -1.0 } else { (e.hurt / 0.5).clamp(0.0, 1.0) };
             if !e.item.is_empty() {
                 if let Some(m) = self.item_model(textures, e.item.item) {
                     instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
@@ -648,8 +654,19 @@ impl EntityRenderer {
             }
             // Vanilla: sqrt of the death time over a second, up to a quarter turn.
             let roll = e.dying.map_or(0.0, |d| (d * 1.6).sqrt().min(1.0) * std::f32::consts::FRAC_PI_2);
-            let root = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw) * Mat4::from_rotation_z(roll) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-            posed.push(Posed { kind, root, pitch: e.pitch, swing, crouch: e.crouched, anims, anim_count, layers, layer_count });
+            // Lying down in its low box: head first where it looks when swimming (vanilla's
+            // setupRotations), flat when crawling, turned around the middle of the body.
+            let lying = match e.pose {
+                crate::world::Pose::Swim => Some(e.pitch - std::f32::consts::FRAC_PI_2),
+                crate::world::Pose::Crawl => Some(-std::f32::consts::FRAC_PI_2),
+                _ => None,
+            };
+            let swim = lying.map_or(Mat4::IDENTITY, |a| Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0)) * Mat4::from_rotation_x(a) * Mat4::from_translation(Vec3::new(0.0, -0.9, 0.0)));
+            let root = Mat4::from_translation(base) * Mat4::from_rotation_y(e.body_yaw) * Mat4::from_rotation_z(roll) * swim * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+            // Its head up to look ahead, and limbs by the swimming stroke.
+            let swim_limbs = lying.map(|_| e.walk * 4.0);
+            let (pitch, head_yaw) = if lying.is_some() { (std::f32::consts::FRAC_PI_4, 0.0) } else { (e.pitch, e.yaw - e.body_yaw) };
+            posed.push(Posed { kind, root, pitch, head_yaw, swing, crouch: e.pose == crate::world::Pose::Crouch, swim: swim_limbs, attack: e.arm_swing.unwrap_or(0.0), anims, anim_count, layers, layer_count });
         }
         let vb = scene_buf;
         self.models.begin();
@@ -703,7 +720,7 @@ impl EntityRenderer {
             let ch = |s: u32| ((color >> s) & 255) as f32 / 255.0;
             boxes.push(GpuBox { rows: rows(m), color: [ch(24), ch(16), ch(8), 0.0], ids: [0, box_mode::FILLED, ch(0).to_bits(), 0], ..Default::default() });
         }
-        if let Some((p, progress, at)) = breaking {
+        for &(p, progress, at) in breaking {
             if progress > 0.0 {
                 // Over the faces of the block's model (a ladder's board, not its whole cube),
                 // textured like the block's own faces there.
@@ -857,6 +874,12 @@ fn sprite_name(item: u32) -> Option<&'static str> {
     st.item_sprite().and_then(|t| c.textures.get(t as usize)).map(String::as_str)
 }
 
+/// From view space to the camera-relative world for what the first person view holds: it bobs
+/// with the world and lags behind a turning camera.
+fn hand_space(cam: &Camera, h: &Hand, pose: Mat4) -> Mat4 {
+    cam.view().inverse() * cam.bobbing() * Mat4::from_rotation_x(-h.lag.0 * 0.1) * Mat4::from_rotation_y(-h.lag.1 * 0.1) * pose
+}
+
 /// Where the held item's model goes in front of the camera, posed like vanilla's
 /// ItemInHandRenderer: swing translation, arm offset, attack rotation, then the item model's
 /// first person display transform. `None` for the bare arm.
@@ -866,12 +889,19 @@ fn hand_transform(cam: &Camera, h: &Hand, pose: Mat4) -> Option<Mat4> {
     c.items.get(h.stack.item as usize).filter(|_| !h.stack.is_empty())?;
     let p = h.swing.unwrap_or(0.0);
     let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
-    let view = cam.view().inverse() * pose;
+    let view = hand_space(cam, h, pose);
     let deg = |d: f32| d.to_radians();
     let swing_sin = (p * p * PI).sin();
+    // Vanilla's applyEatTransform: up to the mouth, bobbing once it is there.
+    let view = h.using.map_or(view, |(left, all)| {
+        let done = left / all;
+        let bob = if done < 0.8 { (left / 4.0 * PI).cos().abs() * 0.1 } else { 0.0 };
+        let up = 1.0 - done.powi(27);
+        view * Mat4::from_translation(Vec3::new(up * 0.6, bob - up * 0.5, 0.0)) * Mat4::from_rotation_y(deg(up * 90.0)) * Mat4::from_rotation_x(deg(up * 10.0)) * Mat4::from_rotation_z(deg(up * 30.0))
+    });
     let arm = view
         * Mat4::from_translation(Vec3::new(-0.4 * sr, 0.2 * (p.sqrt() * PI * 2.0).sin(), -0.2 * s))
-        * Mat4::from_translation(Vec3::new(0.56, -0.52, -0.72))
+        * Mat4::from_translation(Vec3::new(0.56, -0.52 - h.lowered * 0.6, -0.72))
         * Mat4::from_rotation_y(deg(45.0 - swing_sin * 20.0))
         * Mat4::from_rotation_z(deg(-sr * 20.0))
         * Mat4::from_rotation_x(deg(-sr * 80.0))
@@ -886,25 +916,28 @@ fn hand_transform(cam: &Camera, h: &Hand, pose: Mat4) -> Option<Mat4> {
     })
 }
 
-/// The bare right arm (the model's `rightArm` bone) in front of the camera (vanilla's
-/// ItemInHandRenderer).
+/// The bare right arm (the model's `rightArm` bone) in front of the camera, with the numbers of
+/// vanilla's ItemInHandRenderer.renderPlayerArm.
 fn hand_boxes(out: &mut Vec<GpuBox>, cam: &Camera, h: &Hand, skin: Option<(u32, [f32; 2])>, arm: Option<&crate::registry::Part>, pose: Mat4) {
-    use std::f32::consts::PI;
+    use std::f32::consts::{PI, TAU};
     let (Some((tex, size)), Some(arm)) = (skin, arm) else { return };
     let p = h.swing.unwrap_or(0.0);
     let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
-    // From view space to the camera-relative world: the hand stays put on screen while the
-    // bobbing view moves.
-    let view = cam.view().inverse() * pose;
-    let swing = Mat4::from_translation(Vec3::new(-0.4 * sr, 0.2 * (p.sqrt() * PI * 2.0).sin(), -0.2 * s));
-    // Raised and turned in from the right; its boxes are around the shoulder pivot.
-    let shoulder = view
-        * swing
-        * Mat4::from_translation(Vec3::new(0.56, -0.78, -0.36))
-        * Mat4::from_rotation_y(0.32 + sr * 0.3)
-        * Mat4::from_rotation_x(1.85 + s * 0.5)
-        * Mat4::from_rotation_z(0.12)
-        * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+    let deg = |d: f32| d.to_radians();
+    let swing = Vec3::new(-0.3 * sr + 0.64, 0.4 * (p.sqrt() * TAU).sin() - 0.6 - h.lowered * 0.6, -0.4 * s - 0.72);
+    let shoulder = hand_space(cam, h, pose)
+        * Mat4::from_translation(swing)
+        * Mat4::from_rotation_y(deg(45.0 + sr * 70.0))
+        * Mat4::from_rotation_z(deg((p * p * PI).sin() * -20.0))
+        * Mat4::from_translation(Vec3::new(-1.0, 3.6, 3.5))
+        * Mat4::from_rotation_z(deg(120.0))
+        * Mat4::from_rotation_x(deg(200.0))
+        * Mat4::from_rotation_y(deg(-135.0))
+        * Mat4::from_translation(Vec3::new(5.6, 0.0, 0.0))
+        * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
+        // Vanilla's model space hangs down from y 24 and faces -z; ours stands up and faces +z.
+        * Mat4::from_rotation_x(PI)
+        * Mat4::from_translation(Vec3::from_array(arm.pivot) - Vec3::Y * 24.0);
     for c in &arm.cuboids {
         let m = shoulder * Mat4::from_translation(Vec3::from_array(c.origin)) * Mat4::from_scale(Vec3::from_array(c.size));
         out.push(GpuBox { rows: rows(m), dims: [c.size[0], c.size[1], c.size[2], 0.0], uvo: [c.uv[0], c.uv[1], size[0], size[1]], color: [1.0, 1.0, 1.0, 0.0], ids: [tex, box_mode::SKIN, 0, 0], ids2: [0; 4] });

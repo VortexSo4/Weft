@@ -60,11 +60,6 @@ impl Msg {
         out
     }
 
-    /// Ready text shown as it is, no translation.
-    pub fn plain(text: impl Into<String>) -> Msg {
-        Msg { key: String::new(), args: vec![Arg::Text(text.into())] }
-    }
-
     /// As plain text, without icons or formatting.
     pub fn text(&self, lang: &Lang) -> String {
         plain_text(&self.spans(lang, None))
@@ -550,11 +545,6 @@ const ICON: f32 = 16.0;
 /// Lays out spans, wrapping at spaces when a line would exceed `max_width` (font pixels).
 pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout {
     layout_with(spans, font, max_width, font.line_height, false)
-}
-
-/// `layout` with lines `line_height` font pixels apart (tooltips leave room between lines).
-pub fn layout_spaced(spans: &[Span], font: &Font, max_width: Option<f32>, line_height: f32) -> TextLayout {
-    layout_with(spans, font, max_width, line_height, false)
 }
 
 /// With `mono` every glyph takes a cell as wide as a digit (two for wide characters), so changing

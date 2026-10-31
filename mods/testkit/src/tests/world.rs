@@ -496,7 +496,7 @@ pub async fn growth(t: T) -> R {
     t.check_eq(t.block(cane).await?, "core:air".to_string(), "sugar cane without water breaks off");
     t.set(add(cane, [0, -1, 1]), "water").await?;
     t.set(cane, "sugar_cane").await?;
-    t.op("time 200000").await?;
+    t.op("skip 199000").await?;
     t.secs(0.5).await?;
     t.check_eq(t.block(add(farm, [0, 1, 0])).await?, "base:wheat[age=7]".to_string(), "wheat after a jump of 2.5 hours");
     t.check_eq(t.block(add(cane, [0, 2, 0])).await?, "base:sugar_cane".to_string(), "sugar cane after the jump");
@@ -507,7 +507,7 @@ pub async fn growth(t: T) -> R {
     t.cmd("/tp 3000 10 3000").await?;
     t.secs(3.0).await?;
     t.check_eq(t.block(cane2).await?, "core:air".to_string(), "far away, the cane's area is not here");
-    t.op("time 400000").await?;
+    t.op("skip 200000").await?;
     t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2])).await?;
     t.secs(1.0).await?;
     t.loaded().await?;
@@ -541,7 +541,7 @@ pub async fn catch_up(t: T) -> R {
     t.op(&format!("insert {} iron_ore 3", at(e))).await?;
     t.secs(0.3).await?;
     t.check_eq(t.block(dirt).await?, "base:dirt".to_string(), "bare dirt is still dirt");
-    t.op("time 200000").await?;
+    t.op("skip 199000").await?;
     // Made up at once, in the tick after the jump.
     t.secs(1.0).await?;
     t.check_eq(t.block(dirt).await?, "base:grass".to_string(), "grass took the bare dirt");
@@ -558,7 +558,7 @@ pub async fn catch_up(t: T) -> R {
     t.secs(0.2).await?;
     t.cmd("/tp 3000 10 3000").await?;
     t.secs(3.0).await?;
-    t.op("time 400000").await?;
+    t.op("skip 200000").await?;
     t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2])).await?;
     t.secs(1.0).await?;
     t.loaded().await?;

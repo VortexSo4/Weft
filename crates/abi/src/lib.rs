@@ -232,6 +232,16 @@ pub mod comp {
     pub const MAX_STACK: &str = "max_stack";
     pub const DURABILITY: &str = "durability";
     pub const ATTACK_DAMAGE: &str = "attack_damage";
+    /// Item: ticks of holding the use button before it takes effect (food 32); slows while held.
+    pub const USE_TICKS: &str = "use_ticks";
+    /// Item: full swings per second (a sword 1.6). An empty hand does 4.
+    pub const ATTACK_SPEED: &str = "attack_speed";
+    /// Item: a full swing standing on the ground also hits what stands next to the target.
+    pub const SWEEPS: &str = "sweeps";
+    /// On an item: in creative it doesn't break blocks (a sword). Client and server both read it.
+    pub const NO_CREATIVE_BREAK: &str = "no_creative_break";
+    /// On a biome: rain falls as snow there.
+    pub const SNOWY: &str = "snowy";
     pub const MINING_SPEED: &str = "mining_speed";
     pub const TOOL_LEVEL: &str = "tool_level";
     /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
@@ -635,6 +645,8 @@ pub mod dim_flags {
     /// Blocks never update: no neighbor updates (support, liquids), scheduled, random or
     /// growth ticks. For showcases like the engine's `core:debug_blocks`.
     pub const NO_BLOCK_UPDATES: u32 = 2;
+    /// It rains here now and then.
+    pub const WEATHER: u32 = 8;
     /// Only what names it: ores, scatters and decorations meant for every dimension skip it
     /// (a superflat test world).
     pub const BARE: u32 = 4;
@@ -915,6 +927,18 @@ pub mod damage {
     pub const LAVA: u32 = 7;
     /// Squeezed against blocks by a crushing body.
     pub const CRUSH: u32 = 8;
+    /// Caught in a blast.
+    pub const EXPLOSION: u32 = 10;
+    /// Its head stuck in a block.
+    pub const SUFFOCATE: u32 = 9 | BYPASSES_ARMOR;
+}
+
+/// What `EntityState::pose` says.
+pub mod pose {
+    pub const STAND: u32 = 0;
+    pub const CROUCH: u32 = 1;
+    pub const SWIM: u32 = 2;
+    pub const CRAWL: u32 = 3;
 }
 
 #[repr(C)]
@@ -928,6 +952,13 @@ pub struct EntityState {
     pub pitch: f32,
     pub on_ground: u32,
     pub in_liquid: u32,
+    /// Sprinting (players), as its client says.
+    pub sprinting: u32,
+    /// Left the ground by jumping this tick (players).
+    pub jumped: u32,
+    /// `pose::*`.
+    pub pose: u32,
+    pub flying: u32,
     pub health: f32,
     pub max_health: f32,
     pub age: u64,
@@ -939,6 +970,14 @@ pub struct EntityState {
     /// Box width and height and eye height now (crouching and `set_size` included).
     pub size: [f32; 3],
 }
+
+impl EntityState {
+    /// The block its feet are in.
+    pub fn block_pos(&self) -> [i32; 3] {
+        // No `floor` here: this crate has no std.
+        self.pos.map(|v| v as i32 - ((v as i32) as f64 > v) as i32)
+    }
+}
 defaults!(EntityState {
     kind: 0,
     flags: 0,
@@ -948,6 +987,10 @@ defaults!(EntityState {
     pitch: 0.0,
     on_ground: 0,
     in_liquid: 0,
+    sprinting: 0,
+    jumped: 0,
+    pose: 0,
+    flying: 0,
     health: 0.0,
     max_health: 0.0,
     age: 0,
@@ -1574,6 +1617,10 @@ pub struct Host {
     /// is its entity, 0 for the world, `pos` in its blocks); state + 1, or 0 for none.
     pub entity_look_at: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32, frame: *mut u64) -> u32,
     /// Fills `out` with ids near `pos` (all kinds if `kind` is u32::MAX), returns how many matched.
+    /// Like `entities_near`, only what can be hit: no dropped items, block entities, spectators or the dead.
+    pub entities_near_bodies: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, out: *mut u64, max: usize) -> usize,
+    pub in_liquid: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3]) -> u32,
+    pub entity_swing_strength: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> f32,
     pub entities_near: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize,
     /// An entity's component bytes, null if it has none. Changes are found by comparing with
     /// what was last sent, so writing through the pointer is enough.
@@ -1627,6 +1674,13 @@ pub struct Host {
     /// argument shows that argument as it is).
     pub ui_text: unsafe extern "C" fn(ui: *mut UiCtx, key: Str, args: Slice<UiArg>),
     pub client_player: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
+    pub client_attribute: unsafe extern "C" fn(client: *mut ClientCtx, name: Str) -> f64,
+    pub client_swing_strength: unsafe extern "C" fn(client: *mut ClientCtx) -> f32,
+    /// Ticks left of the item being used, negative when none.
+    pub client_using: unsafe extern "C" fn(client: *mut ClientCtx) -> f32,
+    pub client_day_time: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
+    pub client_raining: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
+    pub client_permission: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
     /// Synced component of an entity the client knows (own player always), null if unknown.
     pub client_component: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, comp: u32) -> *const u8,
     pub client_entity: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, out: *mut EntityState) -> u32,
@@ -1682,6 +1736,12 @@ pub struct Host {
     pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const [f64; 3]),
     /// Sets this dimension's time of day counter at the end of the tick.
     pub set_time: unsafe extern "C" fn(world: *mut WorldCtx, time: u64),
+    /// The time of day's clock, which `set_time` sets (0 sunrise, 6000 noon, then on past a day).
+    pub day_time: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
+    /// Changes what a liquid shows and allows, a later mod's say on any mod's liquid.
+    pub reg_liquid_change: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LiquidChange),
+    /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
+    pub skip_ticks: unsafe extern "C" fn(world: *mut WorldCtx, ticks: u64),
     /// Fills a ball with one block at the end of the tick, the whole dimension at once: loaded
     /// cubes on every core, the rest when they load (`AreaFillDesc`).
     pub area_fill: unsafe extern "C" fn(world: *mut WorldCtx, desc: *const AreaFillDesc),
@@ -1806,6 +1866,18 @@ pub struct Host {
     pub reg_client_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
     /// Adds alternatives (`usage` syntax) to an existing command, handled by `cb` with
     /// `CommandArgs` laid out by this usage; runs where the command runs.
+    /// The `permission` level a server command asks for (by default `GAME_MASTER`).
+    pub reg_command_permission: unsafe extern "C" fn(reg: *mut Registrar, command: Str, level: u32),
+    /// Rain and thunder in this dimension for `ticks`, after which they change by themselves.
+    pub set_weather: unsafe extern "C" fn(world: *mut WorldCtx, raining: u32, thunder: u32, ticks: u32),
+    pub raining: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
+    pub thundering: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
+    /// A white flash on an entity for everyone who sees it.
+    pub entity_flash: unsafe extern "C" fn(world: *mut WorldCtx, id: u64),
+    /// A player's `permission` level.
+    pub player_permission: unsafe extern "C" fn(world: *mut WorldCtx, player: u64) -> u32,
+    /// Sets it, remembered with the world.
+    pub set_player_permission: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, level: u32),
     pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, client: u32, cb: Callback),
 
     // ------------------------------------------------ text, shaders, particles
@@ -1814,6 +1886,8 @@ pub struct Host {
     pub reg_text_condition: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cb: Callback),
     /// A particle kind, see `ParticleDesc`.
     pub reg_particle: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ParticleDesc),
+    /// A thing in a dimension's sky, see `SkyDesc`.
+    pub reg_sky: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SkyDesc),
     /// Server: particles for every player that sees `burst.pos`.
     pub particles: unsafe extern "C" fn(world: *mut WorldCtx, burst: *const ParticleBurst),
     /// Client: particles only this client shows.
@@ -2136,6 +2210,8 @@ pub mod particle_flags {
     pub const TRANSLUCENT: u32 = 4;
     /// Shrinks to nothing over its life.
     pub const SHRINK: u32 = 8;
+    /// Gone on landing (rain).
+    pub const DIES_ON_LAND: u32 = 16;
 }
 
 /// A particle kind. Particles live only on clients; the server and mods send bursts.
@@ -2176,6 +2252,107 @@ defaults!(ParticleDesc {
     shader: Str::EMPTY,
 });
 
+/// How much a player may do, for commands and anything else that asks: modern's levels. A player
+/// may do what asks for its level or less.
+pub mod permission {
+    /// Everybody.
+    pub const EVERYONE: u32 = 0;
+    /// May get past protection a mod sets up, no commands of the game.
+    pub const MODERATOR: u32 = 1;
+    /// May change the game: `/give`, `/tp`, `/time`, `/gamemode`. What a mod's command asks for
+    /// unless it says otherwise.
+    pub const GAME_MASTER: u32 = 2;
+    /// May change the rules and who may do what: `/rule`, `/tick`, `/op`.
+    pub const ADMIN: u32 = 3;
+    /// The host.
+    pub const OWNER: u32 = 4;
+}
+
+/// What a thing in the sky is (`SkyDesc`).
+pub mod sky_kind {
+    /// A picture on an orbit: a sun, a moon.
+    pub const BODY: u32 = 0;
+    /// Many small points scattered over the sky, turning together.
+    pub const STARS: u32 = 1;
+    /// The whole sky: a skybox picture or a shader.
+    pub const DOME: u32 = 2;
+    /// A layer of boxes in the air, where a picture's pixels are filled.
+    pub const CLOUDS: u32 = 3;
+}
+
+/// A thing in a dimension's sky, known by (`dimension`, `name`). Registered again by a later mod
+/// it changes only what that registration sets, so everything here starts out "not set": NaN,
+/// `u32::MAX`, `i32::MIN` or an empty name.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SkyDesc {
+    pub dimension: Str,
+    pub name: Str,
+    /// Non-zero: takes it out of the sky instead.
+    pub remove: u32,
+    /// `sky_kind`.
+    pub kind: u32,
+    /// Picture under `textures/sky/`. A dome tells its layout by its shape (see `SkyBuilder`).
+    pub texture: Str,
+    /// Colors it instead of the plain picture: `shaders/sky/<name>.wgsl`.
+    pub shader: Str,
+    /// Where on its orbit it is at time 0, in turns: 0 rising in the east, 0.25 overhead.
+    pub phase: f32,
+    /// Ticks per turn, negative the other way, 0 stands still, infinite follows the dimension's day.
+    pub orbit: f32,
+    /// Degrees the orbit leans south of overhead, and turns around the vertical.
+    pub tilt: f32,
+    pub heading: f32,
+    /// Degrees across the sky (of each star, for stars).
+    pub size: f32,
+    /// Ticks per turn around its own middle, 0 none.
+    pub spin: f32,
+    /// How much of it shows by full day and by deep night, 0..1.
+    pub opacity: [f32; 2],
+    /// 0xRRGGBB multiplied in.
+    pub color: u32,
+    /// Picture grid of frames, columns and rows, and the ticks each frame lasts.
+    pub frames: [u32; 2],
+    pub frame_ticks: u32,
+    /// 0xRRGGBB of the glow it casts along the horizon while rising and setting, 0 none.
+    pub glow: u32,
+    /// 1: adds its light over what is behind it; 0: covers it.
+    pub additive: u32,
+    /// Stars: how many, and what scatters them.
+    pub count: u32,
+    pub seed: u32,
+    /// Clouds: the height of their underside, and blocks per tick they drift along x.
+    pub height: f32,
+    pub drift: f32,
+    /// Drawn low to high, one over the other; registration order among equals.
+    pub order: i32,
+}
+defaults!(SkyDesc {
+    dimension: Str::EMPTY,
+    name: Str::EMPTY,
+    remove: 0,
+    kind: u32::MAX,
+    texture: Str::EMPTY,
+    shader: Str::EMPTY,
+    phase: f32::NAN,
+    orbit: f32::NAN,
+    tilt: f32::NAN,
+    heading: f32::NAN,
+    size: f32::NAN,
+    spin: f32::NAN,
+    opacity: [f32::NAN; 2],
+    color: u32::MAX,
+    frames: [u32::MAX; 2],
+    frame_ticks: u32::MAX,
+    glow: u32::MAX,
+    additive: u32::MAX,
+    count: u32::MAX,
+    seed: u32::MAX,
+    height: f32::NAN,
+    drift: f32::NAN,
+    order: i32::MIN,
+});
+
 /// Particles of one kind appearing together.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2201,6 +2378,20 @@ pub mod particle {
     pub const BLOCK: &str = "core:block";
     /// Smoke puffs (a mob dying).
     pub const POOF: &str = "core:poof";
+    /// Sparks off a critical hit.
+    pub const CRIT: &str = "core:crit";
+    /// A flame's tip (a torch, a lit furnace).
+    pub const FLAME: &str = "core:flame";
+    /// A thin rising smoke.
+    pub const SMOKE: &str = "core:smoke";
+    /// Rising through water.
+    pub const BUBBLE: &str = "core:bubble";
+    /// Thrown up when something enters water.
+    pub const SPLASH: &str = "core:splash";
+    /// Falling from a ceiling with water above it.
+    pub const DRIP: &str = "core:drip";
+    pub const RAIN: &str = "core:rain";
+    pub const SNOW: &str = "core:snow";
 }
 
 /// Values are copied out before the call and written back after it (changes of synced
@@ -2408,6 +2599,18 @@ pub mod attribute {
     pub const VISIBILITY: &str = "core:visibility";
     /// Multiplier on jump speed (1: a block and a quarter high).
     pub const JUMP_STRENGTH: &str = "core:jump_strength";
+    /// 1 or more: can swim in any liquid, also those that are not `swimmable`.
+    pub const SWIM_ANYWHERE: &str = "core:swim_anywhere";
+    /// Multiplier on how fast a swing recharges.
+    pub const ATTACK_SPEED: &str = "core:attack_speed";
+    /// Below 1: can't sprint (the base game while too hungry).
+    pub const CAN_SPRINT: &str = "core:can_sprint";
+    /// How far a player reaches blocks (4.5; 5 in creative).
+    pub const BLOCK_REACH: &str = "core:block_reach";
+    /// How far a player reaches entities (3; 5 in creative).
+    pub const ENTITY_REACH: &str = "core:entity_reach";
+    /// Multiplier on how fast a player mines (1).
+    pub const MINING_SPEED: &str = "core:mining_speed";
 }
 
 /// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times
@@ -2432,6 +2635,8 @@ pub mod loot_cond {
     /// The block was harvested: broken by the world, or mined with a tool its `harvest_level`
     /// accepts. Block tables made from `drops` have it on their pool.
     pub const HARVESTED: u32 = 6;
+    /// The block's state has what `text` says, a property and its value: `age=7`.
+    pub const BLOCK_STATE: u32 = 7;
 }
 
 #[repr(C)]
@@ -2543,8 +2748,32 @@ pub struct LiquidDesc {
     pub density: i32,
     /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
     pub temperature: u32,
+    /// Non-zero: sprinting in it swims. Others can be swum in with the `SWIM_ANYWHERE` attribute.
+    pub swimmable: u32,
+    /// The fog seen from inside: 0xRRGGBB (`u32::MAX`: the average color of its texture) and the
+    /// blocks it takes to hide everything.
+    pub fog_color: u32,
+    pub fog_distance: f32,
+    /// The picture over the screen from inside (empty: its own texture), under `textures/`, and
+    /// how much of it shows.
+    pub overlay: Str,
+    pub overlay_opacity: f32,
 }
-defaults!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, renewable: u32::MAX, density: 1000, temperature: 300 });
+defaults!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, renewable: u32::MAX, density: 1000, temperature: 300, swimmable: 1, fog_color: u32::MAX, fog_distance: 96.0, overlay: Str::EMPTY, overlay_opacity: 0.1 });
+
+/// What another mod's liquid should change, without touching its flow. Everything starts out "not
+/// set": `u32::MAX`, NaN, empty.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LiquidChange {
+    pub name: Str,
+    pub swimmable: u32,
+    pub fog_color: u32,
+    pub fog_distance: f32,
+    pub overlay: Str,
+    pub overlay_opacity: f32,
+}
+defaults!(LiquidChange { name: Str::EMPTY, swimmable: u32::MAX, fog_color: u32::MAX, fog_distance: f32::NAN, overlay: Str::EMPTY, overlay_opacity: f32::NAN });
 
 /// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
 /// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
@@ -3125,6 +3354,8 @@ pub mod hud_anchor {
     pub const HOTBAR_RIGHT: &str = "hotbar_right";
     /// Centered above the hotbar and what stands on it (the held item's name, `core:held_name`).
     pub const ABOVE_HOTBAR: &str = "above_hotbar";
+    /// Just under the crosshair, without moving it (the attack indicator).
+    pub const UNDER_CROSSHAIR: &str = "under_crosshair";
     /// A panel of the F3 overlay (left or right side), titled by the element's name as a
     /// translation key; the engine's five groups take F3+1..5, mods' the next numbers up to 9.
     pub const DEBUG_LEFT: &str = "debug_left";

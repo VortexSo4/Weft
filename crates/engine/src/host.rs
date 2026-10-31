@@ -63,6 +63,9 @@ pub static HOST: Host = Host {
     entity_attack,
     entity_look_at,
     entities_near,
+    entities_near_bodies,
+    in_liquid,
+    entity_swing_strength,
     component,
     player_count,
     player_at,
@@ -91,6 +94,12 @@ pub static HOST: Host = Host {
     ui_close: crate::client::modui::ui_close,
     ui_text: crate::client::modui::ui_text,
     client_player: crate::client::modui::client_player,
+    client_attribute: crate::client::modui::client_attribute,
+    client_swing_strength: crate::client::modui::client_swing_strength,
+    client_using: crate::client::modui::client_using,
+    client_day_time: crate::client::modui::client_day_time,
+    client_raining: crate::client::modui::client_raining,
+    client_permission: crate::client::modui::client_permission,
     client_component: crate::client::modui::client_component,
     client_entity: crate::client::modui::client_entity,
     client_creative: crate::client::modui::client_creative,
@@ -111,6 +120,8 @@ pub static HOST: Host = Host {
     inventory_create,
     entity_teleport,
     set_time,
+    day_time,
+    skip_ticks,
     area_fill,
     set_game_mode,
     client_state: crate::app::api::client_state,
@@ -135,6 +146,7 @@ pub static HOST: Host = Host {
     image_free: crate::app::api::image_free,
     name_of,
     reg_liquid,
+    reg_liquid_change,
     reg_liquid_reaction,
     liquid_of,
     use_container,
@@ -159,9 +171,17 @@ pub static HOST: Host = Host {
     client_menu_owner: crate::client::modui::client_menu_owner,
     reg_system,
     reg_client_command,
+    set_weather,
+    raining,
+    thundering,
+    entity_flash,
+    reg_command_permission,
+    player_permission,
+    set_player_permission,
     reg_command_branch,
     reg_text_condition,
     reg_particle,
+    reg_sky,
     particles,
     client_particles: crate::app::api::client_particles,
     reg_config,
@@ -504,7 +524,14 @@ unsafe extern "C" fn entity_spawn(w: *mut abi::WorldCtx, kind: u32, pos: *const 
 }
 
 unsafe extern "C" fn entity_remove(w: *mut abi::WorldCtx, id: u64) {
-    unsafe { dim(w).entities.remove(id) }
+    unsafe {
+        let d = dim(w);
+        if d.entities.get(id).is_some_and(|e| e.player) {
+            misuse("entity_remove", || "a player can't be removed; kill it or teleport it".to_string());
+            return;
+        }
+        d.entities.remove(id)
+    }
 }
 
 unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::EntityState) -> u32 {
@@ -535,7 +562,16 @@ unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::E
             }
             e.yaw = s.yaw;
             e.pitch = s.pitch;
-            e.health = s.health.min(s.max_health.max(e.health));
+            // Only a respawn brings back the dead, and only damage kills: everything that follows
+            // a death goes one way.
+            if e.alive() {
+                let health = s.health.min(s.max_health.max(e.health));
+                if health > 0.0 {
+                    e.health = health;
+                } else {
+                    dim(w).damage(content(), id, f32::MAX, 0, weft_abi::damage::VOID);
+                }
+            }
         }
     }
 }
@@ -546,14 +582,7 @@ unsafe extern "C" fn entity_push(w: *mut abi::WorldCtx, id: u64, v: *const [f64;
         if !v.is_finite() {
             return;
         }
-        let d = dim(w);
-        let Some(e) = d.entities.get_mut(id) else { return };
-        if e.player {
-            let t = v / crate::world::TPS as f64;
-            d.entities.pushed.push((id, ([t.x as f32, t.y as f32, t.z as f32], false)));
-        } else {
-            e.vel += v;
-        }
+        dim(w).push(id, v);
     }
 }
 
@@ -584,7 +613,31 @@ unsafe extern "C" fn entity_damage(w: *mut abi::WorldCtx, id: u64, amount: f32, 
 }
 
 unsafe extern "C" fn entity_attack(w: *mut abi::WorldCtx, attacker: u64, target: u64) -> u32 {
-    unsafe { dim(w).attack(content(), attacker, target, ItemStack::EMPTY) as u32 }
+    unsafe { dim(w).melee(content(), attacker, target) as u32 }
+}
+
+unsafe extern "C" fn entities_near_bodies(w: *mut abi::WorldCtx, pos: *const [f64; 3], radius: f64, out: *mut u64, max: usize) -> usize {
+    unsafe {
+        let ids = dim(w).entities.near_bodies(content(), DVec3::from_array(*pos), radius);
+        for (i, id) in ids.iter().take(max).enumerate() {
+            *out.add(i) = *id;
+        }
+        ids.len()
+    }
+}
+
+unsafe extern "C" fn in_liquid(w: *mut abi::WorldCtx, pos: *const [f64; 3]) -> u32 {
+    unsafe {
+        let d = dim(w);
+        crate::physics::liquid_at(content(), &|p| d.get(p), DVec3::from_array(*pos)).is_some() as u32
+    }
+}
+
+unsafe extern "C" fn entity_swing_strength(w: *mut abi::WorldCtx, id: u64) -> f32 {
+    unsafe {
+        let d = dim(w);
+        d.swing_strength(content(), id, d.entities.held(id))
+    }
 }
 
 unsafe extern "C" fn entities_near(w: *mut abi::WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize {
@@ -621,11 +674,26 @@ unsafe extern "C" fn inv_get(w: *mut abi::WorldCtx, owner: u64, slot: u32) -> It
     unsafe { dim(w).entities.inventories.get(&owner).and_then(|i| i.get(slot as usize)).copied().unwrap_or_default() }
 }
 
+/// A stack from a mod: anything it says goes into saves and on screen, where a wrong id would
+/// bring down the game instead of naming the mod.
+fn known_item(what: &'static str, stack: &ItemStack) -> bool {
+    let known = stack.is_empty() || (stack.item as usize) < content().items.len();
+    if !known {
+        misuse(what, || format!("no item with id {}", stack.item));
+    }
+    known
+}
+
 unsafe extern "C" fn inv_set(w: *mut abi::WorldCtx, owner: u64, slot: u32, stack: ItemStack) {
-    unsafe { dim(w).entities.set_slot(owner, slot, stack) }
+    if known_item("inv_set", &stack) {
+        unsafe { dim(w).entities.set_slot(owner, slot, stack) }
+    }
 }
 
 unsafe extern "C" fn inv_insert(w: *mut abi::WorldCtx, owner: u64, stack: ItemStack) -> ItemStack {
+    if !known_item("inv_insert", &stack) {
+        return ItemStack::EMPTY;
+    }
     unsafe { dim(w).entities.insert_item(content(), owner, stack) }
 }
 
@@ -689,6 +757,20 @@ unsafe extern "C" fn inventory_create(w: *mut abi::WorldCtx, slots: u32, pos: *c
         d.entities.insert(c, e);
         d.entities.inventories.insert(id, vec![ItemStack::EMPTY; slots.min(1 << 16) as usize]);
         id
+    }
+}
+
+unsafe extern "C" fn day_time(w: *mut abi::WorldCtx) -> u64 {
+    unsafe {
+        let d = dim(w);
+        d.time.saturating_add_signed(d.day_offset)
+    }
+}
+
+unsafe extern "C" fn skip_ticks(w: *mut abi::WorldCtx, ticks: u64) {
+    unsafe {
+        let d = dim(w);
+        d.events.push(crate::server::DimEvent::SkipTicks { dim: d.id, ticks })
     }
 }
 
@@ -1383,8 +1465,7 @@ unsafe extern "C" fn reg_recipe_kind(r: *mut abi::Registrar, d: *const abi::Reci
             info_values: d.info_values.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
             display: d.display.is_some().then_some(d.display),
         };
-        let owner = r.owner;
-        r.game.recipe_kinds.push(registry::RawRecipeKind { owner, name: d.name.as_str().to_string(), def });
+        r.game.recipe_kinds.push(registry::RawRecipeKind { name: d.name.as_str().to_string(), def });
     }
 }
 
@@ -1396,7 +1477,14 @@ unsafe extern "C" fn reg_attach_value(r: *mut abi::Registrar, kind: Str, compone
 unsafe extern "C" fn reg_liquid(r: *mut abi::Registrar, d: *const abi::LiquidDesc) {
     unsafe {
         let d = *d;
-        reg(r).game.liquids.push((d.name.as_str().to_string(), d));
+        reg(r).game.liquids.push((d.name.as_str().to_string(), d.overlay.as_str().to_string(), abi::LiquidDesc { overlay: Str::EMPTY, ..d }));
+    }
+}
+
+unsafe extern "C" fn reg_liquid_change(r: *mut abi::Registrar, d: *const abi::LiquidChange) {
+    unsafe {
+        let d = *d;
+        reg(r).game.liquid_changes.push((d.name.as_str().to_string(), d.overlay.as_str().to_string(), abi::LiquidChange { name: Str::EMPTY, overlay: Str::EMPTY, ..d }));
     }
 }
 
@@ -1542,7 +1630,7 @@ unsafe extern "C" fn reg_loot_modifier(r: *mut abi::Registrar, d: *const abi::Lo
 unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi::LootCtx, out: *mut ItemStack, max: usize) -> usize {
     unsafe {
         let x = if ctx.is_null() { abi::LootCtx::DEFAULT } else { *ctx };
-        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0, mined: x.mined };
+        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0, mined: x.mined, state: x.mined };
         let stacks = dim(w).roll_loot(content(), name.as_str(), &ctx);
         for (i, s) in stacks.iter().take(max).enumerate() {
             *out.add(i) = *s;
@@ -1585,6 +1673,41 @@ unsafe extern "C" fn reg_words(r: *mut abi::Registrar, set: Str, words: Str) {
     unsafe {
         let words = words.as_str().split(',').map(str::trim).filter(|w| !w.is_empty()).map(String::from).collect();
         reg(r).game.words.push((set.as_str().to_string(), words));
+    }
+}
+
+unsafe extern "C" fn set_weather(w: *mut abi::WorldCtx, raining: u32, thunder: u32, ticks: u32) {
+    unsafe {
+        let d = dim(w);
+        d.events.push(crate::server::DimEvent::SetWeather { dim: d.id, raining: raining != 0, thunder: thunder != 0, ticks });
+    }
+}
+
+unsafe extern "C" fn thundering(w: *mut abi::WorldCtx) -> u32 {
+    unsafe { dim(w).thunder as u32 }
+}
+
+unsafe extern "C" fn raining(w: *mut abi::WorldCtx) -> u32 {
+    unsafe { dim(w).raining as u32 }
+}
+
+unsafe extern "C" fn entity_flash(w: *mut abi::WorldCtx, id: u64) {
+    unsafe { dim(w).events.push(crate::server::DimEvent::Flash { id }) }
+}
+
+unsafe extern "C" fn reg_command_permission(r: *mut abi::Registrar, command: Str, level: u32) {
+    unsafe {
+        reg(r).game.command_permissions.push((command.as_str().to_string(), level));
+    }
+}
+
+unsafe extern "C" fn player_permission(w: *mut abi::WorldCtx, player: u64) -> u32 {
+    unsafe { dim(w).entities.get(player).map_or(0, |e| e.permission) }
+}
+
+unsafe extern "C" fn set_player_permission(w: *mut abi::WorldCtx, player: u64, level: u32) {
+    unsafe {
+        dim(w).events.push(crate::server::DimEvent::SetPermission { player, level: level.min(abi::permission::OWNER) });
     }
 }
 
@@ -1683,6 +1806,20 @@ unsafe extern "C" fn reg_particle(r: *mut abi::Registrar, d: *const abi::Particl
             desc: abi::ParticleDesc { name: Str::EMPTY, cell: std::ptr::null(), textures: abi::Slice::EMPTY, shader: Str::EMPTY, ..d },
         };
         reg(r).game.particles.push(p);
+    }
+}
+
+unsafe extern "C" fn reg_sky(r: *mut abi::Registrar, d: *const abi::SkyDesc) {
+    unsafe {
+        let d = *d;
+        let s = registry::RawSky {
+            dimension: d.dimension.as_str().to_string(),
+            name: d.name.as_str().to_string(),
+            texture: d.texture.as_str().to_string(),
+            shader: d.shader.as_str().to_string(),
+            desc: abi::SkyDesc { dimension: Str::EMPTY, name: Str::EMPTY, texture: Str::EMPTY, shader: Str::EMPTY, ..d },
+        };
+        reg(r).game.sky.push(s);
     }
 }
 

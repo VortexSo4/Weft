@@ -142,7 +142,13 @@ pub fn write(c: &Content, out: &mut Vec<u8>, list: &[ToSave<'_>]) {
         w.u16(saved.len() as u16);
         for (id, bytes) in saved {
             w.str(&c.game.components[*id as usize].name);
-            w.u16(bytes.len() as u16);
+            // Component values over 64 KB say so with a marker, older saves never have it.
+            if bytes.len() >= u16::MAX as usize {
+                w.u16(u16::MAX);
+                w.u32(bytes.len() as u32);
+            } else {
+                w.u16(bytes.len() as u16);
+            }
             w.0.extend_from_slice(bytes);
         }
         match blocks {
@@ -158,6 +164,30 @@ pub fn write(c: &Content, out: &mut Vec<u8>, list: &[ToSave<'_>]) {
             None => w.u32(u32::MAX),
         }
     }
+}
+
+/// Marks the trailer of a cube's saved data that holds its pending block ticks: (position in the
+/// cube, ticks left) pairs, their count, this. Older saves simply don't end in it.
+const TICKS_MAGIC: u32 = 0x4B43_4954;
+
+pub fn append_ticks(out: &mut Vec<u8>, ticks: &[(u16, u32)]) {
+    for (at, left) in ticks {
+        out.extend_from_slice(&at.to_le_bytes());
+        out.extend_from_slice(&left.to_le_bytes());
+    }
+    out.extend_from_slice(&(ticks.len() as u32).to_le_bytes());
+    out.extend_from_slice(&TICKS_MAGIC.to_le_bytes());
+}
+
+pub fn read_ticks(data: &[u8]) -> Vec<(u16, u32)> {
+    let word = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let Some(end) = data.len().checked_sub(8) else { return Vec::new() };
+    if word(end + 4) != Some(TICKS_MAGIC) {
+        return Vec::new();
+    }
+    let n = word(end).unwrap_or(0) as usize;
+    let Some(start) = end.checked_sub(n * 6) else { return Vec::new() };
+    data[start..end].chunks_exact(6).map(|p| (u16::from_le_bytes([p[0], p[1]]), u32::from_le_bytes([p[2], p[3], p[4], p[5]]))).collect()
 }
 
 pub fn read(c: &Content, data: &[u8]) -> Vec<Saved> {
@@ -205,6 +235,7 @@ fn read_one(c: &Content, r: &mut R) -> Option<Option<Saved>> {
     for _ in 0..nc {
         let name = r.str()?;
         let len = r.u16()? as usize;
+        let len = if len == u16::MAX as usize { r.u32()? as usize } else { len };
         let bytes = r.take(len)?.to_vec();
         if let Some(id) = c.game.component(&name) {
             let mut b = bytes;

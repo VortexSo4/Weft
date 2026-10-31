@@ -52,6 +52,10 @@ pub fn extract(e: &mut Entities, c: &Content, id: u64, amount: i64, simulate: bo
 
 impl Grid {
     pub fn cube_loaded(&mut self, c: &Content, pos: IVec3, cube: &Cube) {
+        // A machine arriving next to cables that are here already belongs to their network.
+        if !self.conductors.is_empty() && cube.palette().iter().any(|&s| c.game.block_entities.contains_key(&c.states[s as usize].block)) {
+            self.dirty = true;
+        }
         if !cube.palette().iter().any(|&s| c.states[s as usize].conductor) {
             return;
         }

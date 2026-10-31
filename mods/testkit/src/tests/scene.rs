@@ -297,13 +297,13 @@ async fn damage_chain(t: &T) -> R {
     // Iron chestplate: 6 points, 4% each.
     t.op("put me 37 iron_chestplate 1").await?;
     let armored = t.op("damage 8 0").await?;
-    t.check((value(&armored) - 6.08).abs() < 1e-4, format!("iron chestplate: {armored}"));
+    t.check((value(&armored) - 7.36).abs() < 1e-4, format!("iron chestplate: {armored}"));
     let fall = t.op(&format!("damage 8 {}", abi::damage::FALL)).await?;
     t.check((value(&fall) - 8.0).abs() < 1e-6, format!("armor does not soften falls: {fall}"));
     t.cmd("/rule testkit:half_damage 1").await?;
     let both = t.op("damage 8 0").await?;
     t.cmd("/rule testkit:half_damage 0").await?;
-    t.check((value(&both) - 3.04).abs() < 1e-4, format!("armor then halved: {both}"));
+    t.check((value(&both) - 3.68).abs() < 1e-4, format!("armor then halved: {both}"));
     t.check(both.contains("base at stage 200") && both.contains("testkit at stage 300"), format!("explanation names both steps: {both}"));
     Ok(())
 }

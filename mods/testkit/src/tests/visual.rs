@@ -325,7 +325,8 @@ pub async fn inventory_figure(t: T) -> R {
 pub async fn use_swing(t: T) -> R {
     t.flat().await?;
     t.c().look(0.0, -45.0);
-    t.frames(10).await?;
+    // The hand eases after the camera.
+    t.secs(1.0).await?;
     let still = t.grab().await?;
     t.press("core:use");
     t.frames(4).await?;

@@ -19,6 +19,11 @@ pub trait CubeMap {
     fn writable(&self, _c: IVec3) -> bool {
         true
     }
+    /// Whether light may be taken from this cube's edge (a server's cube already has the light it
+    /// should have: what its neighbor still holds from before may be gone by now).
+    fn gives_light(&self, _c: IVec3) -> bool {
+        true
+    }
 }
 
 const DIRS: [IVec3; 6] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Y, IVec3::Y, IVec3::NEG_Z, IVec3::Z];
@@ -74,6 +79,11 @@ pub fn sky_below(above: Option<&Cube>, open: bool) -> SkyBelow {
 const SKY: usize = 0;
 
 #[inline]
+/// The sky's level in a light value as cubes store it.
+pub fn sky_of(v: u32) -> u8 {
+    ch(v, SKY)
+}
+
 fn ch(v: u32, c: usize) -> u8 {
     (v >> (c * 8)) as u8
 }
@@ -395,6 +405,9 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     fn seed_from_neighbors(&mut self, cp: IVec3, c: usize, dirs: &[usize]) {
         let base = cp * 16;
         for &d in dirs {
+            if !self.map.gives_light(cp + DIRS[d]) {
+                continue;
+            }
             let Some(n) = self.map.cube(cp + DIRS[d]) else { continue };
             // A uniformly dark neighbor has nothing to give.
             if n.uniform_light().is_some_and(|l| ch(l, c) <= 1) {

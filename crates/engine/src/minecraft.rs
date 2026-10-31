@@ -155,14 +155,21 @@ fn build(
             let mut words = theirs.split_whitespace();
             let (mode, src) = match words.next() {
                 Some("glow") => ("glow", words.next().unwrap_or("")),
+                // Drawn additively there, black for nothing: see `light_to_alpha`.
+                Some("light") => ("light", words.next().unwrap_or("")),
+                // Two pictures one above the other, for a model drawn from one texture.
+                Some("stack") => ("stack", words.next().unwrap_or("")),
                 Some(s) => ("copy", s),
                 None => continue,
             };
-            let crop: Vec<u32> = match words.next() {
+            let next = words.next();
+            let lower = (mode == "stack").then_some(next).flatten();
+            let crop: Vec<u32> = match next {
                 Some("crop") => words.filter_map(|w| w.parse().ok()).collect(),
                 _ => Vec::new(),
             };
-            let Some(png) = read(&format!("{T}{src}.png")) else {
+            // Names change between versions: the first one this version has.
+            let Some(png) = src.split('|').find_map(|s| read(&format!("{T}{s}.png"))) else {
                 // Older or newer versions name some textures differently: ours stays.
                 log::debug!("{ns}/minecraft.txt:{}: no {src} in this version", n + 1);
                 continue;
@@ -170,7 +177,14 @@ fn build(
             let dst = base.join(format!("{ours}.png"));
             let dst_dir = dst.parent().map(Path::to_path_buf).unwrap_or_default();
             std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
-            if mode == "glow" || crop.len() == 4 {
+            if let Some(lower) = lower {
+                let below = read(&format!("{T}{lower}.png")).and_then(|b| crate::assets::decode_png(&b));
+                let above = crate::assets::decode_png(&png);
+                let (Some(a), Some(b)) = (above, below) else { continue };
+                let mut px = a.rgba;
+                px.extend_from_slice(&b.rgba);
+                crate::assets::encode_png(&dst, a.width, a.height + b.height, &px).map_err(|e| e.to_string())?;
+            } else if mode == "glow" || mode == "light" || crop.len() == 4 {
                 let img = crate::assets::decode_png(&png).ok_or(format!("{src}: not a png"))?;
                 let (x0, y0, w, h) = if crop.len() == 4 {
                     (crop[0], crop[1], crop[2], crop[3])
@@ -190,6 +204,9 @@ fn build(
                         let on = p[3] > 0 && p[0] > 150 && p[0] as i32 - p[2] as i32 > 80;
                         p.copy_from_slice(&if on { [255; 4] } else { [0, 0, 0, 255] });
                     }
+                }
+                if mode == "light" {
+                    light_to_alpha(&mut px);
                 }
                 crate::assets::encode_png(&dst, w, h, &px).map_err(|e| e.to_string())?;
             } else {
@@ -230,6 +247,22 @@ fn build(
     Ok(files)
 }
 
+/// A picture meant to be added to what is behind it, as an ordinary transparent one: how bright a
+/// pixel is becomes how much it covers, and its color what is left once that is taken out.
+fn light_to_alpha(px: &mut [u8]) {
+    for p in px.chunks_exact_mut(4) {
+        let bright = p[0].max(p[1]).max(p[2]) as u32;
+        if bright == 0 {
+            p.copy_from_slice(&[0; 4]);
+            continue;
+        }
+        for c in &mut p[..3] {
+            *c = (*c as u32 * 255 / bright) as u8;
+        }
+        p[3] = (bright * p[3] as u32 / 255) as u8;
+    }
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
         let dst = to.join(e.file_name());
@@ -247,4 +280,33 @@ fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325, |h, b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::light_to_alpha;
+
+    /// Builds the real pack from the Minecraft on this computer into `run`, as a normal start does:
+    /// automated runs don't, and this needs no window. `cargo test --release -p weft_engine real_pack -- --ignored`
+    #[test]
+    #[ignore]
+    fn real_pack() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let roots = [("core".to_string(), root.join("crates/engine/assets")), ("base".to_string(), root.join("mods/base/assets"))];
+        super::ensure_pack(&root.join("run"), &roots);
+        let sky = root.join("run/resourcepacks").join(super::PACK).join("base/textures");
+        let sun = crate::assets::decode_png(&std::fs::read(sky.join("sky/sun.png")).unwrap()).unwrap();
+        assert_eq!(sun.rgba[3], 0, "the corner of the sun is transparent");
+        assert!(sky.join("gui/attack_bar_fill.png").is_file());
+    }
+
+    #[test]
+    fn additive_black_becomes_transparent() {
+        let mut px = [0, 0, 0, 255, 255, 230, 100, 255, 40, 40, 20, 255, 40, 40, 20, 128];
+        light_to_alpha(&mut px);
+        assert_eq!(px[..4], [0, 0, 0, 0], "nothing to add covers nothing");
+        assert_eq!(px[4..8], [255, 230, 100, 255], "the brightest stay as they are");
+        assert_eq!(px[8..12], [255, 255, 127, 40], "a dim halo is its color, barely covering");
+        assert_eq!(px[12..16], [255, 255, 127, 20], "alpha it already had counts");
+    }
 }

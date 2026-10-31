@@ -9,6 +9,8 @@ use crate::components::{self as comps, Components};
 
 #[derive(Clone, Debug)]
 pub struct Cond {
+    /// `BLOCK_STATE`: the property and its value, `age=7`.
+    pub prop: String,
     pub kind: u32,
     pub value: f32,
     /// Component id for tag conditions (`u32::MAX` = a tag nothing has).
@@ -47,6 +49,8 @@ pub struct Ctx {
     pub on_fire: bool,
     /// The block state mined with `tool` (0 = none, or broken by the world).
     pub mined: u32,
+    /// The block state the table is rolled for, however it was broken (0 for none).
+    pub state: u32,
 }
 
 // ---------------------------------------------------------------- registration
@@ -129,7 +133,7 @@ impl Resolve<'_> {
     fn conds(&self, c: &[RawCond], errors: &mut Vec<String>, table: &str) -> Vec<Cond> {
         c.iter()
             .map(|c| {
-                let tag = if c.text.is_empty() {
+                let tag = if c.text.is_empty() || c.kind == lc::BLOCK_STATE {
                     u32::MAX
                 } else {
                     crate::refs::tag(self.components, &c.text).unwrap_or_else(|e| {
@@ -137,7 +141,7 @@ impl Resolve<'_> {
                         u32::MAX
                     })
                 };
-                Cond { kind: c.kind, value: c.value, tag }
+                Cond { kind: c.kind, value: c.value, tag, prop: if c.kind == lc::BLOCK_STATE { c.text.clone() } else { String::new() } }
             })
             .collect()
     }
@@ -194,7 +198,7 @@ pub fn freeze(raw: Vec<RawLoot>, mut mods_list: Vec<RawLootMod>, order: &dyn Fn(
 
 /// One item when the block is harvested: a block's table when it names none.
 pub fn harvested(item: u32, count: u32) -> Table {
-    let conds = vec![Cond { kind: lc::HARVESTED, value: 1.0, tag: u32::MAX }];
+    let conds = vec![Cond { kind: lc::HARVESTED, value: 1.0, tag: u32::MAX, prop: String::new() }];
     Table { pools: vec![Pool { rolls: (1, 1), conds, entries: vec![Entry { item, weight: 1, min: count, max: count, conds: Vec::new(), smelt: None }] }] }
 }
 
@@ -209,6 +213,11 @@ fn passes(c: &crate::content::Content, conds: &[Cond], ctx: &Ctx, rng: &mut dyn 
         lc::KILLED_BY_PLAYER => ctx.by_player,
         lc::ON_FIRE => ctx.on_fire,
         lc::HARVESTED => ctx.mined == 0 || c.harvests(ctx.mined, ctx.tool.item),
+        // Not per tick or per entity: only when a table is rolled for a block.
+        lc::BLOCK_STATE => {
+            let name = c.state_name(ctx.state);
+            name.split_once('[').is_some_and(|(_, props)| props.trim_end_matches(']').split(',').any(|p| p == cd.prop))
+        }
         _ => false,
     })
 }

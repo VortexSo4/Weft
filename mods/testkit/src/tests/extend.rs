@@ -31,7 +31,7 @@ pub async fn events_batched(t: T) -> R {
     t.op("put me 1 bread 2").await?;
     t.c().select(1);
     t.secs(0.3).await?;
-    t.press("core:use");
+    t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1).await?;
     // The broken stone dropped cobblestone next to the player.
     t.c().teleport([f[0] as f64 + 3.5, f[1] as f64, f[2] as f64 + 1.5]);
@@ -62,7 +62,7 @@ pub async fn vetoes_and_timers(t: T) -> R {
     t.secs(0.5).await?;
     t.check_eq(t.c().inventory_slot(1).count, 2, "question::USE_ITEM denied, the bread stays");
     t.cmd("/rule testkit:no_use 0").await?;
-    t.press("core:use");
+    t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1).await?;
     let before: u32 = t.op("rings").await?.parse().unwrap_or(0);
     t.op("after 30").await?;

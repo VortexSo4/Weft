@@ -105,6 +105,22 @@ struct PostPixel {
     scene: u32,
 }
 
+// What a sky shader (`shaders/sky/<name>.wgsl`, `fn shade(p: SkyPixel) -> vec4<f32>`) gets; it
+// returns the color and how much it covers, and the opacity is applied after it.
+struct SkyPixel {
+    // Unit direction of the pixel in the world, and in the object's own frame, which turns with
+    // its orbit (x points at a body).
+    dir: vec3<f32>,
+    local: vec3<f32>,
+    // 0..1 across the quad, or across the picture of a dome.
+    uv: vec2<f32>,
+    // The picture's sample (white without one) and the object's color, both linear.
+    albedo: vec4<f32>,
+    color: vec4<f32>,
+    daylight: f32,
+    time: f32,
+}
+
 // What a particle shader (`shaders/particle/<name>.wgsl`, `fn shade(p: ParticleFrag) -> vec4<f32>`)
 // gets; it returns the color before lighting and fog.
 struct ParticleFrag {

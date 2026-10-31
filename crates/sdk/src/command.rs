@@ -14,6 +14,24 @@ use std::ops::{Deref, DerefMut};
 use crate::abi::{self, Str, command_value as cv};
 use crate::{World, callback, host};
 
+/// What `Registry::command` gives back, to say more about the command.
+pub struct CommandOptions {
+    raw: *mut abi::Registrar,
+    name: String,
+}
+
+impl CommandOptions {
+    pub(crate) fn new(raw: *mut abi::Registrar, name: &str) -> CommandOptions {
+        CommandOptions { raw, name: name.to_string() }
+    }
+
+    /// The `abi::permission` level it asks for.
+    pub fn permission(self, level: u32) -> Self {
+        unsafe { (host().reg_command_permission)(self.raw, Str::new(&self.name), level) };
+        self
+    }
+}
+
 /// What every command gets: its arguments and a way to answer.
 pub struct Command<'a> {
     args: &'a mut abi::CommandArgs,

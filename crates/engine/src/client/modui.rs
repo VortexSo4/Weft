@@ -361,7 +361,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             }
             uk::ICONS => {
                 let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
-                b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0, rtl: n.data == 1 }, style)
+                b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0, rtl: n.data == 1, shake: n.data == 2 }, style)
             }
             uk::IMAGE => b.ui.open(Kind::Image { texture: n.text.as_str().to_string(), color: 0xFFFFFFFF }, style),
             uk::ENTITY => b.ui.open(Kind::Custom { tag: TAG_ENTITY, data: 0 }, style),
@@ -403,6 +403,33 @@ pub unsafe extern "C" fn ui_text(u: *mut abi::UiCtx, key: Str, a: abi::Slice<abi
 
 pub unsafe extern "C" fn client_player(c: *mut abi::ClientCtx) -> u64 {
     unsafe { view(c).map_or(0, |cl| cl.player_id) }
+}
+
+pub unsafe extern "C" fn client_attribute(c: *mut abi::ClientCtx, name: abi::Str) -> f64 {
+    unsafe {
+        let id = crate::content::content().game.attr_names.get(name.as_str()).copied();
+        id.and_then(|id| view(c)?.attributes.get(id as usize).copied()).map_or(f64::NAN, |v| v as f64)
+    }
+}
+
+pub unsafe extern "C" fn client_swing_strength(c: *mut abi::ClientCtx) -> f32 {
+    unsafe { view(c).map_or(1.0, |cl| cl.swing_strength()) }
+}
+
+pub unsafe extern "C" fn client_using(c: *mut abi::ClientCtx) -> f32 {
+    unsafe { view(c).and_then(|cl| cl.using).map_or(-1.0, |u| u.0) }
+}
+
+pub unsafe extern "C" fn client_day_time(c: *mut abi::ClientCtx) -> u64 {
+    unsafe { view(c).map_or(0, |cl| cl.world.time) }
+}
+
+pub unsafe extern "C" fn client_raining(c: *mut abi::ClientCtx) -> u32 {
+    unsafe { view(c).is_some_and(|cl| cl.weather.0) as u32 }
+}
+
+pub unsafe extern "C" fn client_permission(c: *mut abi::ClientCtx) -> u32 {
+    unsafe { view(c).map_or(0, |cl| cl.permission) }
 }
 
 pub unsafe extern "C" fn client_component(c: *mut abi::ClientCtx, id: u64, comp: u32) -> *const u8 {
@@ -455,6 +482,9 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 pitch: cl.player.pitch,
                 on_ground: cl.player.on_ground as u32,
                 in_liquid: cl.player.in_liquid as u32,
+                sprinting: cl.player.sprinting as u32,
+                pose: cl.player.pose as u32,
+                flying: cl.player.flying as u32,
                 health: cl.health,
                 max_health: cl.max_health,
                 size: { let (hw, h, eye) = cl.player.dims(); [hw as f32 * 2.0, h as f32, eye as f32] },

@@ -125,7 +125,6 @@ impl Dim {
                 moved.push((e, inv, comps));
             }
         }
-        s.entities.despawned.clear();
         let mut events = std::mem::take(&mut s.events);
         for ev in &mut events {
             match ev {

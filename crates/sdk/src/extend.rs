@@ -21,7 +21,7 @@ use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
 use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
 
-pub use abi::{BlockChange, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, stage};
+pub use abi::{BlockChange, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage};
 
 /// The engine's questions (`Registry::intercept`, `World::ask`).
 pub mod question {
@@ -66,6 +66,18 @@ pub mod attribute {
     pub static VISIBILITY: Attribute = Attribute::named(crate::abi::attribute::VISIBILITY);
     /// Multiplier on jump speed, players and mobs (1).
     pub static JUMP_STRENGTH: Attribute = Attribute::named(crate::abi::attribute::JUMP_STRENGTH);
+    /// 1 or more: can swim in any liquid, also those that are `not_swimmable`.
+    pub static SWIM_ANYWHERE: Attribute = Attribute::named(crate::abi::attribute::SWIM_ANYWHERE);
+    /// Multiplier on how fast a swing recharges (1).
+    pub static ATTACK_SPEED: Attribute = Attribute::named(crate::abi::attribute::ATTACK_SPEED);
+    /// Below 1: can't sprint (1).
+    pub static CAN_SPRINT: Attribute = Attribute::named(crate::abi::attribute::CAN_SPRINT);
+    /// How far a player reaches blocks (4.5; 5 in creative).
+    pub static BLOCK_REACH: Attribute = Attribute::named(crate::abi::attribute::BLOCK_REACH);
+    /// How far a player reaches entities (3; 5 in creative).
+    pub static ENTITY_REACH: Attribute = Attribute::named(crate::abi::attribute::ENTITY_REACH);
+    /// Multiplier on how fast a player mines (1).
+    pub static MINING_SPEED: Attribute = Attribute::named(crate::abi::attribute::MINING_SPEED);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -223,6 +235,9 @@ pub enum Cond {
     /// The block was harvested: broken by the world, or mined with a tool its `needs_tool`
     /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
     Harvested,
+    /// The block's state has this property at this value, written as in `w.prop`:
+    /// `BlockState("age=7")` for a ripe crop, `BlockState("lit=true")`.
+    BlockState(&'static str),
 }
 
 impl Cond {
@@ -238,6 +253,7 @@ impl Cond {
             Cond::ToolLevel(l) => (k::TOOL_LEVEL, *l as f32, ""),
             Cond::KilledByPlayer => (k::KILLED_BY_PLAYER, 1.0, ""),
             Cond::OnFire => (k::ON_FIRE, 1.0, ""),
+            Cond::BlockState(prop) => (k::BLOCK_STATE, 1.0, *prop),
             Cond::Harvested => (k::HARVESTED, 1.0, ""),
         }
     }

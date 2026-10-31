@@ -153,6 +153,32 @@ impl crate::server::visibility::Cubes for Seen<'_> {
 
 struct Map<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
 
+/// The cubes around one the server sent: its light and that of the others it sent is final, so
+/// only cubes made here take part, giving and getting.
+struct Sent<'a> {
+    cubes: &'a mut FxHashMap<IVec3, Arc<Cube>>,
+    server: &'a FxHashSet<IVec3>,
+    sent: IVec3,
+}
+
+impl CubeMap for Sent<'_> {
+    fn cube(&self, c: IVec3) -> Option<&Cube> {
+        self.cubes.get(&c).map(|a| &**a)
+    }
+    fn cube_mut(&mut self, c: IVec3) -> Option<&mut Cube> {
+        if c != self.sent && self.server.contains(&c) {
+            return None;
+        }
+        self.cubes.get_mut(&c).map(Arc::make_mut)
+    }
+    fn writable(&self, c: IVec3) -> bool {
+        c == self.sent || !self.server.contains(&c)
+    }
+    fn gives_light(&self, c: IVec3) -> bool {
+        !self.server.contains(&c)
+    }
+}
+
 /// The cubes, to read only.
 struct Read<'a>(&'a FxHashMap<IVec3, Arc<Cube>>);
 
@@ -801,7 +827,7 @@ impl Terrain {
     /// other cubes whose light changed.
     fn light_sent(&mut self, pos: IVec3) -> FxHashSet<IVec3> {
         let c: &Content = content();
-        let mut map = Map(&mut self.cubes);
+        let mut map = Sent { cubes: &mut self.cubes, server: &self.server, sent: pos };
         let mut lighter = Lighter::new(&mut map, c, c.dims[self.dim as usize].sky_light);
         lighter.light_prelit(pos);
         let mut changed = std::mem::take(&mut lighter.changed);

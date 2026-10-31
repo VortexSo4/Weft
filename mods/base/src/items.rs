@@ -52,45 +52,63 @@ pub fn register(r: &mut Registry) {
         ("beef", 3, 1.8, "raw_meat/beef"),
         ("cooked_beef", 8, 12.8, "cooked_meat/beef"),
         ("rotten_flesh", 4, 0.8, ""),
+        ("chicken", 2, 1.2, "raw_meat/chicken"),
+        ("cooked_chicken", 6, 7.2, "cooked_meat/chicken"),
+        ("mutton", 2, 1.2, "raw_meat/mutton"),
+        ("cooked_mutton", 6, 9.6, "cooked_meat/mutton"),
+        ("spider_eye", 2, 3.2, ""),
     ] {
-        let i = r.item(Item::generated(name.into())).set(&FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab(&crate::tabs::FOOD);
+        let i = r.item(Item::generated(name.into())).set(&FOOD, Food { hunger, saturation }).use_ticks(32).on_use(base_api::eat).tab(&crate::tabs::FOOD);
         if !tag.is_empty() {
             i.tag(tag);
         }
     }
     r.item(Item::generated("leather".into())).tag("materials/leather").tab(&crate::tabs::INGREDIENTS);
-    for name in ["bone", "string", "sugar"] {
+    for name in ["bone", "string", "sugar", "gunpowder", "feather", "arrow", "egg"] {
         r.item(Item::generated(name.into())).tag(name).tab(&crate::tabs::INGREDIENTS);
     }
 
     for m in &MATERIALS {
         // `.tool(kind)` tags it `tools/<kind>`; `<kind>s/<material>` picks its recipe.
-        let tool = |r: &mut Registry, kind: &str, damage: f32| {
-            r.item(Item::generated(format!("{}_{kind}", m.name)))
+        let tool = |r: &mut Registry, kind: &str, damage: f32, speed: f32| {
+            let b = r.item(Item::generated(format!("{}_{kind}", m.name)))
                 .tool(kind).tool_level(m.level).mining_speed(m.speed)
                 .durability(m.durability)
-                .attack_damage(damage + m.damage)
+                .attack_damage(damage)
+                .attack_speed(speed)
                 .tag(&format!("{kind}s/{}", m.name))
                 // Vanilla: weapons wear by one per hit, tools (made for blocks) by two.
                 .set(&WEAR_PER_HIT, if kind == "sword" { 1 } else { 2 })
                 .tab(if kind == "sword" { &crate::tabs::COMBAT } else { &crate::tabs::TOOLS });
+            if kind == "sword" {
+                b.sweeps().no_creative_break();
+            }
         };
-        tool(r, "pickaxe", 2.0);
-        tool(r, "axe", 3.0);
-        tool(r, "shovel", 1.0);
-        tool(r, "hoe", 1.0);
-        tool(r, "sword", 4.0);
+        tool(r, "pickaxe", 2.0 + m.damage, 1.2);
+        tool(r, "shovel", 2.5 + m.damage, 1.0);
+        tool(r, "sword", 4.0 + m.damage, 1.6);
+        // Modern's: slow and strong axes, hoes barely hit but swing fast with the material.
+        let (axe_damage, axe_speed, hoe_speed) = match m.name {
+            "wood" => (7.0, 0.8, 1.0),
+            "stone" => (9.0, 0.8, 2.0),
+            "iron" => (9.0, 0.9, 3.0),
+            "diamond" => (9.0, 1.0, 4.0),
+            _ => (7.0, 1.0, 1.0),
+        };
+        tool(r, "axe", axe_damage, axe_speed);
+        tool(r, "hoe", 1.0, hoe_speed);
     }
 
-    for (mat, mult, durability) in [("leather", 0u32, 5u32), ("iron", 1, 15), ("gold", 1, 7), ("diamond", 2, 33)] {
-        for (slot, piece, points, dur) in [(0, "helmet", 1, 11), (1, "chestplate", 3, 16), (2, "leggings", 2, 15), (3, "boots", 1, 13)] {
-            let points = points + mult * (if slot == 1 { 3 } else { 1 });
-            let tag = ARMOR_SLOTS[slot as usize];
+    // Points per piece, head to feet, as in modern.
+    for (mat, points, toughness, durability) in [("leather", [1u32, 3, 2, 1], 0.0f32, 5u32), ("iron", [2, 6, 5, 2], 0.0, 15), ("gold", [2, 5, 3, 1], 0.0, 7), ("diamond", [3, 8, 6, 3], 2.0, 33)] {
+        for (slot, piece, dur) in [(0, "helmet", 11), (1, "chestplate", 16), (2, "leggings", 15), (3, "boots", 13)] {
+            let points = points[slot];
+            let tag = ARMOR_SLOTS[slot];
             // Leggings are the inner layer, drawn closer to the body.
             let (inflate, layer) = if slot == 2 { (0.5, 2) } else { (1.0, 1) };
             r.item(Item::generated(format!("{mat}_{piece}")))
                 .durability(durability * dur)
-                .set(&ARMOR, Armor { points })
+                .set(&ARMOR, Armor { points, toughness })
                 .tag(tag)
                 .tag(&format!("{tag}/{mat}"))
                 .wearable(crate::player::EQUIPMENT[slot as usize], inflate, &format!("armor/{mat}_{layer}"))

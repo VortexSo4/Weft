@@ -7,12 +7,17 @@ use weft_abi::{Model, block_flags as bf};
 
 use crate::content::Content;
 
-/// A crouching player's box and eyes (modern vanilla), on client and server alike.
-/// Crouching lowers a box and its eyes like the player's 1.8 to 1.5 and 1.62 to 1.27
-/// (vanilla), whatever size it has.
-pub fn crouched(height: f64, eye: f64) -> (f64, f64) {
+/// A player's box and eyes in a pose (modern vanilla), on client and server alike: crouching
+/// lowers them like the player's 1.8 to 1.5 and 1.62 to 1.27, swimming to 0.6 and 0.4, whatever
+/// size it has.
+pub fn posed(pose: crate::world::Pose, height: f64, eye: f64) -> (f64, f64) {
+    use crate::world::Pose;
     let r = |v: f64| (v * 1e6).round() / 1e6;
-    (r(height * 1.5 / 1.8), r(eye * 1.27 / 1.62))
+    match pose {
+        Pose::Stand => (height, eye),
+        Pose::Crouch => (r(height * 1.5 / 1.8), r(eye * 1.27 / 1.62)),
+        Pose::Swim | Pose::Crawl => (r(height * 0.6 / 1.8), r(eye * 0.4 / 1.62)),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -443,6 +448,17 @@ pub fn in_liquid(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, pos: DVec3,
     block((pos + DVec3::Y * level).floor().as_ivec3()).is_some_and(|s| c.states[s as usize].liquid.is_some())
 }
 
+/// Which liquid a point is under, its surface considered: water in a block only fills it up to
+/// its level, unless more of the same is on top.
+pub fn liquid_at(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, p: DVec3) -> Option<u16> {
+    let at = p.floor().as_ivec3();
+    let st = &c.states[block(at)? as usize];
+    let liquid = st.liquid?;
+    let covered = block(at + IVec3::Y).is_some_and(|s| c.states[s as usize].liquid == Some(liquid));
+    let surface = if covered { 1.0 } else { (8.0 - st.level as f64) / 9.0 };
+    (p.y - at.y as f64 <= surface).then_some(liquid)
+}
+
 /// How a walker moves itself this tick, in blocks per tick like vanilla.
 #[derive(Clone, Copy, Default)]
 pub struct Control {
@@ -459,6 +475,10 @@ pub struct Control {
     pub jump_boost: DVec3,
     /// Holds itself up in liquids (a swimming mob, a player holding jump).
     pub swim: bool,
+    /// Faster and without sinking in liquids (a sprinting player).
+    pub sprint: bool,
+    /// Swimming: goes where it looks, this being the look's up component.
+    pub swim_look: Option<f64>,
     /// Never steps off an edge, and holds on to a ladder (sneaking).
     pub careful: bool,
 }
@@ -503,6 +523,15 @@ pub fn walk(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[Body<'
         accelerate(vel, 0.02 * drag);
         if ctl.swim {
             vel.y += 0.04;
+        }
+        if ctl.careful {
+            vel.y -= 0.04;
+        }
+        if let Some(look) = ctl.swim_look {
+            let head_under = in_liquid(c, block, *pos, 0.9);
+            if look <= 0.0 || ctl.swim || head_under {
+                vel.y += (look - vel.y) * if look < -0.2 { 0.085 } else { 0.06 };
+            }
         }
     } else {
         let slip = slip_at(pos.y);
@@ -550,8 +579,20 @@ pub fn walk(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[Body<'
         vel.y = 0.2;
     }
     if liquid {
-        *vel *= 0.8;
-        vel.y -= f.gravity / 4.0;
+        let keep = if ctl.sprint { 0.9 } else { 0.8 };
+        vel.x *= keep;
+        vel.z *= keep;
+        vel.y *= 0.8;
+        if !ctl.sprint {
+            vel.y -= f.gravity / 16.0;
+        }
+        // Up a ledge out of the water, vanilla's little boost at a wall with room above it.
+        if r.hit[0] || r.hit[2] {
+            let above = Aabb::around(*pos + DVec3::new(vel.x, vel.y + 0.6, vel.z), f.half_width - 1e-3, f.height);
+            if !collides(c, block, above) {
+                vel.y = 0.3;
+            }
+        }
     } else {
         let slip = if on_ground { slip_at(before.y) } else { 1.0 };
         vel.y = (vel.y - f.gravity) * 0.98;

@@ -10,7 +10,7 @@ pub static FURNACE_MENU: Menu = Menu::named("furnace");
 pub static CHEST_MENU: Menu = Menu::named("chest");
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
+    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0, cooking_item: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
     r.system(&SMELTING, tick_furnaces);
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
     r.machine(&FURNACE, &FURNACE_MENU)
@@ -141,13 +141,13 @@ fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
         if ticks > 1 {
             let was_lit = s.burn > 0;
             catch_up(&w, id, s, ticks);
-            let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
+            let pos = st.block_pos();
             if (s.burn > 0) != was_lit && FURNACE.is(w.get(pos)) {
                 w.set_prop(pos, "lit", if s.burn > 0 { "true" } else { "false" });
             }
             continue;
         }
-        let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
+        let pos = st.block_pos();
         let inv = w.inventory(id);
         let (input_slot, fuel_slot, output_slot) = (inv.group("input"), inv.group("fuel"), inv.group("output"));
         let (input, fuel, output) = (input_slot.get(0), fuel_slot.get(0), output_slot.get(0));
@@ -178,8 +178,16 @@ fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
                 output_slot.set(0, merged);
                 w.emit(&SMELTED, Smelted { furnace: id, input: input.item, output: out });
             }
-        } else if s.cook > 0 {
+        } else if s.burn > 0 {
+            // Modern's: burning with nothing it can do starts over; out of fuel it cools down.
+            s.cook = 0;
+        } else {
             s.cook = s.cook.saturating_sub(2);
+        }
+        // Another item in the input starts over too.
+        if input.item != s.cooking_item {
+            s.cooking_item = input.item;
+            s.cook = 0;
         }
         let lit = s.burn > 0;
         if lit != was_lit && FURNACE.is(w.get(pos)) {

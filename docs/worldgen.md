@@ -79,6 +79,7 @@ r.biome(&DESERT).temperature(0.35..).humidity(..0.0).surface("sand", "sand", 3).
 - `bare_above(y)`: plain stone above this height
 - `frozen(block)`: the water surface turns into this block, and the biome gets the tag `frozen` (base grows no flowers there)
 - `tint(&kind, color)`: what blocks tinted with that kind take here, `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own kind. Kinds you don't give keep their default. To color another mod's biome with your kind, `r.biome_tint(&biome, &kind, color)`.
+- `snows()`: rain falls as snow here
 
 Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there.
 

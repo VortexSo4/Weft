@@ -62,7 +62,8 @@ Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in 
 ## Live values
 Text and bars can change while a screen is open. A binding's closure runs every frame, and the part is redrawn when the value changed.
 - `text_bind(|view, out| out.set("examplemod.energy", &[Arg::Int(stored), Arg::Int(capacity)]))` for text from data
-- `progress_bind(class, s, |view| 0.0..1.0)` for a bar, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
+- `progress_bind(class, s, |view| 0.0..1.0)` for a bar, hidden while the value is negative, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
+- `icons_shaking(class, count, |view| value)` the same, jumping about at 4 or less, like hearts near the end,
 - `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `icons_rtl` fills from the right, like hunger. A negative value hides the row
 
 `view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.me()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.creative()` the game mode, and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
@@ -117,6 +118,7 @@ The main menu's logo is the GUI texture `logo` (drawn across the menu bar in who
 | `TOP_LEFT`, `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT` | the corners of the window |
 | `HOTBAR`, `HOTBAR_LEFT`, `HOTBAR_RIGHT` | over the hotbar, on its left and right (health and hunger live there) |
 | `ABOVE_HOTBAR` | centered above all of that (the held item's name) |
+| `UNDER_CROSSHAIR` | just under the crosshair, which stays where it is (the attack indicator) |
 | `DEBUG_LEFT`, `DEBUG_RIGHT` | a panel of the F3 overlay, titled by the element's name as a translation key |
 
 F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.

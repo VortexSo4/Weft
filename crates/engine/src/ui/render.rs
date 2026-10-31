@@ -431,11 +431,6 @@ impl UiRenderer {
         self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv, color, tex, mode: ui_mode::TEXTURE, ..Default::default() });
     }
 
-    /// 9-slice: corners keep their size (scaled), edges and center stretch.
-    pub fn nine(&mut self, r: Rect, tex: (u32, u32, u32), border: f32, scale: f32, color: u32) {
-        self.nine_sliced(r, tex.0, [tex.1 as f32, tex.2 as f32], [border; 4], scale, color);
-    }
-
     /// 9-slice with its own border per side, in GUI pixels of an image `size` GUI pixels big.
     pub fn nine_sliced(&mut self, r: Rect, idx: u32, size: [f32; 2], border: [f32; 4], scale: f32, color: u32) {
         let [l, t, rr, b] = border.map(|v| v * scale);
@@ -845,6 +840,7 @@ impl UiRenderer {
                     self.stacks.push((r, weft_abi::ItemStack::new(last.0, last.1.max(1)), clip));
                 }
             }
+            Kind::Progress { value, .. } if *value < 0.0 => {}
             Kind::Progress { class, value, dir, .. } => {
                 background(self, class, "");
                 let fill = look.texture(class, "fill").and_then(|n| self.texture(gpu, assets, &n));
@@ -860,14 +856,16 @@ impl UiRenderer {
                     None => self.checker(fr, scale),
                 }
             }
-            Kind::Icons { class, count, value, rtl, .. } if *value >= 0.0 => {
+            Kind::Icons { class, count, value, rtl, shake, .. } if *value >= 0.0 => {
+                let tick = (crate::shaders::clock() * crate::world::TPS as f32) as i64;
                 let names = ["full", "half", "empty"].map(|s| look.texture(class, s));
                 let tex = names.map(|n| n.and_then(|n| self.texture(gpu, assets, &n)));
                 for i in 0..*count {
                     let v = *value - i as f32 * 2.0;
                     let which = if v >= 2.0 { 0 } else if v >= 1.0 { 1 } else { 2 };
                     let slot = if *rtl { count - 1 - i } else { i };
-                    let rr = Rect { x: r.x + slot as f32 * 8.0 * scale, y: r.y, w: 9.0 * scale, h: 9.0 * scale };
+                    let jump = if *shake && *value <= 4.0 { (weft_noise::hash(0, tick, i as i64, 0) & 1) as f32 } else { 0.0 };
+                    let rr = Rect { x: r.x + slot as f32 * 8.0 * scale, y: r.y + jump * scale, w: 9.0 * scale, h: 9.0 * scale };
                     if let Some((idx, _, _)) = tex[2] {
                         self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
                     }
@@ -1013,10 +1011,6 @@ impl UiRenderer {
         list.bind(crate::gpu_layout::bind::ui::QUADS, buf);
         list.bind(crate::gpu_layout::bind::ui::SCREEN, sb);
         list.draw(self.quads.len() as u32 * 6, 1);
-    }
-
-    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
-        gpu.destroy_texture(self.font_tex);
     }
 }
 

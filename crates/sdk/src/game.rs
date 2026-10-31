@@ -112,8 +112,8 @@ impl World {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }
     }
     /// `id` hits `target` the way players do: other mods can forbid it (`question::ATTACK`) or
-    /// change it (`chain::ATTACK_DAMAGE`); the damage is the kind's `.attack_damage(..)`, and a
-    /// mob hits at most once a second. True if it landed.
+    /// change it (`chain::ATTACK_DAMAGE`). A player hits with what it holds, which wears; a mob
+    /// with its kind's `.attack_damage(..)`, at its `.attack_speed(..)`. True if it landed.
     pub fn attack(&self, id: u64, target: u64) -> bool {
         unsafe { (host().entity_attack)(self.raw(), id, target) != 0 }
     }
@@ -128,6 +128,26 @@ impl World {
         }
         buf.truncate(n);
         buf
+    }
+    /// Like `near`, only what can be hit: no dropped items, block entities, spectators or the dead.
+    pub fn near_bodies(&self, pos: [f64; 3], radius: f64) -> Vec<u64> {
+        let mut buf = vec![0u64; 64];
+        let n = unsafe { (host().entities_near_bodies)(self.raw(), &pos, radius, buf.as_mut_ptr(), buf.len()) };
+        if n > buf.len() {
+            buf.resize(n, 0);
+            unsafe { (host().entities_near_bodies)(self.raw(), &pos, radius, buf.as_mut_ptr(), buf.len()) };
+        }
+        buf.truncate(n);
+        buf
+    }
+    /// Whether that point is under a liquid's surface, which a block that isn't full lies below
+    /// its top: for what the block alone can't tell, like a head above shallow water.
+    pub fn in_liquid(&self, pos: [f64; 3]) -> bool {
+        unsafe { (host().in_liquid)(self.raw(), &pos) != 0 }
+    }
+    /// How charged a player's next swing is, 0..1, with what it holds now.
+    pub fn swing_strength(&self, player: u64) -> f32 {
+        unsafe { (host().entity_swing_strength)(self.raw(), player) }
     }
     /// An entity's component, read only (`component_mut` to change it).
     pub fn component<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&T> {
@@ -393,6 +413,14 @@ impl Part {
         self.boxes.push(abi::ModelCuboid { origin, extent: size, uv, ..abi::ModelCuboid::DEFAULT });
         self
     }
+    /// The last box grown by this much on every side, its texture staying the same (wool, a skin's
+    /// outer layer).
+    pub fn inflated(mut self, by: f32) -> Part {
+        if let Some(b) = self.boxes.last_mut() {
+            b.inflate = by;
+        }
+        self
+    }
     /// The last box's unwrap mirrored left to right.
     pub fn mirrored(mut self) -> Part {
         if let Some(b) = self.boxes.last_mut() {
@@ -596,6 +624,10 @@ impl EntityBuilder<'_> {
     /// Damage of its melee hits (`World::attack`), like an item's.
     pub fn attack_damage(self, damage: f32) -> Self {
         crate::WithComponents::set(self, &crate::component::ATTACK_DAMAGE, damage)
+    }
+    /// Its melee hits per second (1), like an item's; `attribute::ATTACK_SPEED` multiplies it.
+    pub fn attack_speed(self, per_second: f32) -> Self {
+        crate::WithComponents::set(self, &crate::component::ATTACK_SPEED, per_second)
     }
     pub fn health(mut self, h: f32) -> Self {
         self.components.retain(|p| p.name != abi::attribute::MAX_HEALTH);
@@ -1173,9 +1205,13 @@ impl Registry {
     /// Chat command `/name` run on the server; `usage` declares its arguments (`<name:type>`,
     /// `[name:type]`, literal words, `|` alternatives), which the engine parses, checks and
     /// completes. An engine command of that name (`/give`, `/tp` ...) is replaced by it.
-    pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::ServerCommand) + Send + Sync + 'static) {
+    ///
+    /// It asks for `permission::GAME_MASTER` unless told otherwise, and players below that are
+    /// told so and not offered it: `r.command("rename", "<name:text>", f).permission(permission::EVERYONE)`.
+    pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::ServerCommand) + Send + Sync + 'static) -> crate::CommandOptions {
         let cb = crate::command::server_cb(f);
-        unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) }
+        unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) };
+        crate::CommandOptions::new(self.raw, name)
     }
 
     /// Like `command`, but runs on the client that types it (`cmd.client()`), never on the

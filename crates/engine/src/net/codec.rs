@@ -10,7 +10,7 @@ use glam::{DVec3, IVec3};
 use weft_abi::{ItemStack, ParticleBurst};
 
 use super::{ToClient, ToServer};
-use crate::world::{Cube, GameMode};
+use crate::world::{Cube, GameMode, Pose};
 
 #[derive(Default)]
 pub struct W(pub Vec<u8>);
@@ -166,6 +166,15 @@ impl Wire for DVec3 {
     }
 }
 
+impl Wire for Pose {
+    fn put(&self, w: &mut W) {
+        (*self as u8).put(w);
+    }
+    fn get(r: &mut R) -> Option<Self> {
+        Some(Pose::from_u8(u8::get(r)?))
+    }
+}
+
 impl Wire for GameMode {
     fn put(&self, w: &mut W) {
         (*self as u8).put(w);
@@ -288,7 +297,7 @@ mod tests {
         let msgs = [
             ToServer::Join { name: "Ann".into(), key: "k".into() },
             ToServer::Use { pos: IVec3::new(-5, 70, 3), face: 3, look: [0.1, -0.5, 0.8], sneak: true, frame: 0 },
-            ToServer::Move { pos: DVec3::new(1.5, 64.0, -3.25), yaw: 1.0, pitch: -0.5, on_ground: true, crouched: false, frame: Some((7, DVec3::ONE)) },
+            ToServer::Move { pos: DVec3::new(1.5, 64.0, -3.25), yaw: 1.0, pitch: -0.5, on_ground: true, pose: crate::world::Pose::Swim, sprint: true, flying: false, frame: Some((7, DVec3::ONE)) },
             ToServer::UseItem { target: Some((IVec3::new(1, 2, 3), 4)) },
             ToServer::Click { slot: 7, button: 1, shift: true },
             ToServer::Drag { slots: vec![3, 4, 9], button: 0 },

@@ -46,7 +46,7 @@ impl ConfigDef {
             _ => {
                 let mut v = v.clamp(self.min.min(self.max), self.max.max(self.min));
                 if self.step > 0.0 {
-                    v = self.min + ((v - self.min) / self.step).round() * self.step;
+                    v = (self.min + ((v - self.min) / self.step).round() * self.step).clamp(self.min.min(self.max), self.max.max(self.min));
                 }
                 if self.kind == ck::INT { v.round() } else { v }
             }
@@ -179,6 +179,19 @@ pub fn override_for_run(name: &str, value: &str) {
     OVERRIDES.lock().unwrap().push((id, now, saved));
 }
 
+/// A value the server decides, in force while connected and not written to this player's file.
+pub fn put_from_server(id: u32, v: f64) {
+    let saved = shown(id);
+    put(id, v);
+    let now = shown(id);
+    if now != saved {
+        let mut overrides = OVERRIDES.lock().unwrap();
+        // A later value from the server: what the file should keep is still the first one's.
+        let saved = overrides.iter().position(|o| o.0 == id).map_or(saved, |i| overrides.remove(i).2);
+        overrides.push((id, now, saved));
+    }
+}
+
 /// A value as its file writes it.
 fn shown(id: u32) -> String {
     match def(id) {
@@ -289,7 +302,10 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::number("core:view_distance", ck::INT, 12.0, 2.0, 64.0, 1.0),
         // Distant terrain beyond the view (`client::lod`), in cubes; 0 off.
         ConfigDef::number("core:lod_distance", ck::INT, 256.0, 0.0, 2048.0, 16.0),
+        // Blocks clouds float above where their dimension puts them.
+        ConfigDef::number("core:cloud_height", ck::INT, 0.0, 0.0, 512.0, 8.0),
         ConfigDef::number("core:vsync", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
+        ConfigDef::number("core:fullscreen", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:terrain_gpu", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:terrain_check", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::number("core:client_visibility", ck::INT, 0.0, 0.0, 2.0, 1.0),

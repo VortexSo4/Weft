@@ -224,6 +224,7 @@ fn coordinate(tok: &str, base: f64) -> Option<f64> {
         Some(rest) => rest.parse::<f64>().ok().map(|v| base + v),
         None => tok.parse().ok(),
     }
+    .filter(|v: &f64| v.is_finite())
 }
 
 /// Three coordinate tokens: absolute and `~` mixed per axis, or all `^` (left, up, forward from
@@ -347,12 +348,16 @@ pub struct CommandDef {
     /// Per alternative: 0 = the command's own, i = `branches[i - 1]` (added by another mod).
     pub owners: Vec<usize>,
     pub branches: Vec<(ModId, Callback)>,
+    /// The `permission` level it asks for.
+    pub level: u32,
 }
 
 impl CommandDef {
     pub fn new(name: &str, usage: &str, alts: Vec<Alt>, handler: Option<(ModId, Callback)>, client: bool) -> CommandDef {
         let owners = vec![0; alts.len()];
-        CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler, client, owners, branches: Vec::new() }
+        // Commands on a player's own client are its own business.
+        let level = if client { weft_abi::permission::EVERYONE } else { weft_abi::permission::GAME_MASTER };
+        CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler, client, owners, branches: Vec::new(), level }
     }
 
     /// Parses `tokens` and says who handles them: the command's own handler (`None` for the
@@ -475,13 +480,13 @@ pub struct Completion {
     pub hint: String,
 }
 
-pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
+pub fn complete(c: &Content, line: &str, players: &[String], permission: u32) -> Completion {
     let from = line.rfind(' ').map_or(0, |i| i + 1);
     let partial = &line[from..];
     let done: Vec<&str> = line[..from].split_whitespace().collect();
     let mut out = Completion { suggestions: Vec::new(), from, hint: String::new() };
     if done.is_empty() {
-        let mut names: Vec<String> = c.commands.iter().map(|d| d.name.clone()).filter(|n| n.starts_with(partial)).collect();
+        let mut names: Vec<String> = c.commands.iter().filter(|d| d.level <= permission).map(|d| d.name.clone()).filter(|n| n.starts_with(partial)).collect();
         names.sort();
         out.suggestions = names;
         return out;
@@ -567,4 +572,20 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
 
 fn hint_name(name: &str, k: &Kind) -> String {
     if *k == Kind::Pos { "x y z".into() } else { name.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mods_command_asks_for_game_master_whatever_its_name() {
+        // The engine's table says what its own /rule and /help ask for; a mod's isn't in it.
+        for name in ["rule", "help", "anything"] {
+            let d = CommandDef::new(name, "", parse_usage("").unwrap(), None, false);
+            assert_eq!(d.level, weft_abi::permission::GAME_MASTER);
+        }
+        let d = CommandDef::new("x", "", parse_usage("").unwrap(), None, true);
+        assert_eq!(d.level, weft_abi::permission::EVERYONE);
+    }
 }
