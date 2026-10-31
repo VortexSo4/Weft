@@ -328,7 +328,7 @@ impl Sky {
             // Rain hides what is up there, domes aside: those are the sky.
             let opacity = (s.opacity[0] + (s.opacity[1] - s.opacity[0]) * night) * if s.kind == sky_kind::DOME { 1.0 } else { 1.0 - rain };
             if s.kind == sky_kind::CLOUDS {
-                let Some((index, _)) = self.picture(gpu, &s.texture) else { continue };
+                let Some((index, [w, h])) = self.picture(gpu, &s.texture) else { continue };
                 const CELL: f64 = 12.0;
                 let setting = |name: &str| c.game.config_names.get(name).map_or(0.0, |&id| crate::config::get(id));
                 // Past all the terrain there is, distant terrain too; the cost doesn't depend on it.
@@ -341,7 +341,7 @@ impl Sky {
                     axes: [[0.0; 4]; 3],
                     uv: [x.rem_euclid(1.0) as f32, z.rem_euclid(1.0) as f32, x.floor().rem_euclid(4096.0) as f32, z.floor().rem_euclid(4096.0) as f32],
                     color: rained(rgb(s.color) * brightness, rain, 0.75).powf(2.2).extend(1.0).to_array(),
-                    ids: [index, kind::CLOUDS, 0, 0],
+                    ids: [index, kind::CLOUDS, w, h],
                     extra: [CELL as f32, 4.0, (lifted - cam.pos.y) as f32, reach as f32],
                 });
                 continue;

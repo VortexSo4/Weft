@@ -30,6 +30,7 @@ struct Entry {
     images: Vec<TextureId>,
     stamp: u64,
     requested: bool,
+    size: u32,
 }
 
 struct Inner {
@@ -82,7 +83,7 @@ impl GameTextures {
         let mut by_name: FxHashMap<String, u32> = FxHashMap::default();
         let mut add = |name: String, source: Source, entries: &mut Vec<Entry>| -> u32 {
             *by_name.entry(name.clone()).or_insert_with(|| {
-                entries.push(Entry { name, source, frames: Vec::new(), glow: Vec::new(), anim: None, images: Vec::new(), stamp: 0, requested: false });
+                entries.push(Entry { name, source, frames: Vec::new(), glow: Vec::new(), anim: None, images: Vec::new(), stamp: 0, requested: false, size: 16 });
                 entries.len() as u32 - 1
             })
         };
@@ -218,25 +219,28 @@ impl GameTextures {
         gpu.write_buffer(i.glow_buffer, 0, bytemuck::cast_slice(&words));
     }
 
-    /// The world shader's tables, per texture id. `info`: two words, static -> (index, 0),
-    /// animated -> (offset into `frames`, count | total ticks << 16 | interpolate << 31).
+    /// The world shader's tables, per texture id. `info`: four words, static -> (index, 0, size, 0),
+    /// animated -> (offset into `frames`, count | total ticks << 16 | interpolate << 31, size, 0).
     /// `frames`: animation frames (index | ticks << 16), then from `overlays` per block texture
     /// its overlay id + 1 or 0.
     pub fn world_tables(&self) -> (Vec<u32>, Vec<u32>, u32) {
         let i = self.inner.borrow();
-        let mut info: Vec<u32> = Vec::with_capacity(i.ids.len() * 2);
+        let mut info: Vec<u32> = Vec::with_capacity(i.ids.len() * 4);
         let mut frames: Vec<u32> = vec![0];
         for &e in &i.ids {
             let en = &i.entries[e as usize];
+            let size = en.size.max(1);
             match (&en.anim, en.frames.is_empty()) {
                 (Some(a), false) if !a.frames.is_empty() => {
                     let total: u32 = a.frames.iter().map(|f| f.1).sum::<u32>().min(0x7FFF);
                     info.push(frames.len() as u32);
                     info.push(a.frames.len() as u32 | total << 16 | (a.interpolate as u32) << 31);
+                    info.push(size);
+                    info.push(0);
                     frames.extend(a.frames.iter().map(|&(f, ticks)| en.frames[f as usize % en.frames.len()] | ticks.min(0xFFFF) << 16));
                 }
-                (_, false) => info.extend([en.frames[0], 0]),
-                (_, true) => info.extend([self.blank.1, 0]),
+                (_, false) => info.extend([en.frames[0], 0, size, 0]),
+                (_, true) => info.extend([self.blank.1, 0, 16, 0]),
             }
         }
         let overlays = frames.len() as u32;
@@ -352,5 +356,5 @@ fn upload(gpu: &mut dyn Backend, i: &mut Inner, l: Loaded) {
     for t in std::mem::replace(&mut en.images, images) {
         gpu.destroy_texture(t);
     }
-    (en.frames, en.glow, en.anim, en.stamp, en.requested) = (frames, glows, l.tex.anim, l.stamp, false);
+    (en.frames, en.glow, en.anim, en.stamp, en.requested, en.size) = (frames, glows, l.tex.anim, l.stamp, false, size);
 }
