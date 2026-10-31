@@ -14,6 +14,7 @@
 <p align="center">
   <a href="https://github.com/VortexSo4/Weft/releases"><b>Download</b></a> ·
   <a href="docs/modding.md"><b>Modding</b></a> ·
+  <a href="docs/testing.md"><b>Testing</b></a> ·
   <a href="docs"><b>Documentation</b></a> ·
   <a href="#project-status"><b>Project status</b></a> ·
   <a href="#contributing"><b>Contributing</b></a>
