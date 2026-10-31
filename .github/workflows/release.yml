@@ -34,7 +34,7 @@ jobs:
           - { os: macos-latest, platform: macos-arm64, exe: weft }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -101,7 +101,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       # The notes of this commit, whatever the tag being released contains.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: .github/release-notes.md
 
