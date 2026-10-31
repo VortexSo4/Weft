@@ -213,7 +213,8 @@ fn watch_sleepers(w: &World) {
         return;
     }
     *last = Some(now);
-    w.set_time((w.time() / 24000 + 1) * 24000);
+    // To the next morning; ticks run on as before.
+    w.set_day_time((w.day_time() / 24000 + 1) * 24000);
     NIGHTS.fetch_add(1, Ordering::Relaxed);
 }
 

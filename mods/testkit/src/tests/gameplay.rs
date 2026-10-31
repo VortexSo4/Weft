@@ -326,6 +326,9 @@ pub async fn advancements(t: T) -> R {
     t.no_screen().await?;
     t.cmd("/advancements reset").await?;
     t.until("advancements reset", Duration::from_secs(5), |t| made(t) == 0).await?;
+    Ok(())
+}
+
 /// A bed placed by a player takes two blocks, the head away from them. Used by day it sets the
 /// respawn point; at night the player lies down and, everybody asleep, the night is skipped;
 /// dead, the player comes back at the bed. Breaking one half takes the other and drops one bed.
